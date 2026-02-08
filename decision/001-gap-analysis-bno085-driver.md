@@ -79,26 +79,46 @@ For a flight control system, we need:
 | Step Counter | 0x11 | IMPLEMENTED | NOT NEEDED |
 | Tap/Shake/Flip Detectors | 0x10,0x19,0x1A | NOT IMPLEMENTED | NOT NEEDED |
 
-## Recommendations
+## Project Milestones
 
-### Phase 1: Use What's Available (Now)
-- Use **Rotation Vector (0x05)** at maximum stable rate (~100Hz on I2C)
-- This provides magnetometer-fused orientation preventing yaw drift
-- Sufficient for initial flight control experiments
+### Milestone 1: Tare calibration and bias validation
+- [ ] Run `tare()` to zero out the ~2 deg systematic bias
+- [ ] Repeat static hold and slow moves tests at 344 Hz to confirm bias is gone
+- [ ] Verify slow motion MAE drops below 1 deg target
+- [ ] Persist tare with `save_tare_data()` for power-cycle survival
+- Reference: [BradCar test_tare.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_tare.py)
 
-### Phase 2: Implement ARVR Stabilized (High Priority)
-- Implement **ARVR Stabilized Rotation Vector (0x28)**
-- Smoother corrections, no discontinuities during motion
-- Better for active flight control loops
+### Milestone 2: Sensor calibration
+- [ ] Run full accelerometer/gyro/magnetometer calibration procedure
+- [ ] Save calibration with `save_calibration_data()`
+- [ ] Repeat baseline tests to measure improvement
+- Reference: [BradCar test_calibration.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_calibration.py)
 
-### Phase 3: High-Frequency Path (Future)
-- Implement **Gyro Integrated Rotation Vector (0x2A)** on Channel 5
-- Enables ~1000Hz updates for prediction/fast response
-- Requires Channel 5 implementation
+### Milestone 3: Game Rotation Vector (0x08) comparison
+- [ ] Run rapid moves, slow moves, and static hold with Game RV at 344 Hz
+- [ ] Compare accuracy vs Rotation Vector (0x05) on roll axis
+- [ ] Measure drift rate over longer duration (no magnetometer = expected yaw drift)
+- No driver changes needed — already implemented
 
-### Phase 4: Consider SPI (Optional)
-- If I2C bandwidth becomes limiting
-- 8x faster, enables higher update rates
+### Milestone 4: GC stall mitigation
+- [ ] Profile the ~45 ms periodic spikes (confirm they are MicroPython GC)
+- [ ] Pre-allocate buffers, use manual `gc.collect()` at safe points
+- [ ] Re-test at 344 Hz, target achieved rate closer to 344 Hz with no spikes >10 ms
+
+### Milestone 5: ARVR Stabilized Rotation Vector (0x28)
+- [ ] Implement report 0x28 in driver
+- [ ] Run rapid moves test, compare discontinuity behaviour vs standard RV
+- [ ] Evaluate for flight control loop suitability
+
+### Milestone 6: Gyro Integrated Rotation Vector (0x2A)
+- [ ] Implement Channel 5 (high-speed gyro) support in driver
+- [ ] Complete report 0x2A implementation
+- [ ] Test at ~1000 Hz, measure latency and accuracy vs speed tradeoff
+
+### Milestone 7: Consider SPI (Optional)
+- [ ] Revisit after Milestones 4-6 — if I2C bandwidth is still limiting
+- [ ] 8x faster throughput, enables higher update rates
+- [ ] See ADR-002 for full analysis
 
 ## Your Assumption Validation
 
