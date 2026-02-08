@@ -1,0 +1,17 @@
+Static hold — IMU noise floor and bias at rest
+
+Setup: BNO085 on lever, AS5600 encoder on rotation axis as reference.
+       Lever fixed in place with a screwdriver (no jig available).
+       Small constant offset from zero is expected in encoder readings — that's fine
+       as long as it stays stable throughout the test.
+Procedure:
+  1. Fix the lever so it cannot move.
+  2. Select report rate (10 Hz or 344 Hz).
+  3. Let it run for the full sample count (2000 reports) without touching anything.
+  4. Download CSV from Pico flash storage.
+
+Purpose: Measure IMU noise floor and confirm the ~2 deg systematic bias seen in motion tests.
+Expected:
+  - Encoder readings should be nearly constant (confirms lever is fixed).
+  - IMU readings should be nearly constant but may differ from encoder by the bias offset.
+  - Any spread in IMU readings is the noise floor — the minimum error achievable.

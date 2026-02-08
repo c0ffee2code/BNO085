@@ -584,7 +584,7 @@ class SensorFeature4:
     FUTURE: Explore if estimated angle and how to expose it for advanced users
     bno.geomagnetic_quaternion is really 5-tuple, but few need est angle, so we treat it as 4-tuple
     """
-    __slots__ = ("_bno", "feature_id", "values", "_count")
+    __slots__ = ("_bno", "feature_id", "_values", "_count")
 
     def __init__(self, bno_instance, feature_id):
         self._bno = bno_instance
@@ -610,7 +610,7 @@ class SensorFeature4:
 
     @property
     def full(self):
-        """Returns (qi, qj, qk, qr, accuracy, timestamp_ms)."""
+        """Returns (qr, qi, qj, qk, accuracy, timestamp_ms)."""
         val = self._values[self.feature_id]
         if val is None: self._raise_not_enabled()
         self._count[self.feature_id] = 0
@@ -618,7 +618,7 @@ class SensorFeature4:
 
     @property
     def euler(self):
-        """Returns converted Euler 3-tuple (Y-P-R) plus accuracy and timestamp_ms."""
+        """Returns converted Euler 3-tuple (yaw, pitch, roll) in degrees."""
         val = self._values[self.feature_id]
         if val is None: self._raise_not_enabled()
         self._count[self.feature_id] = 0

@@ -1,0 +1,11 @@
+Rapid moves — IMU tracking under fast oscillation
+
+Setup: BNO085 on lever, AS5600 encoder on rotation axis as reference.
+Procedure:
+  1. Select report rate (10 Hz or 344 Hz).
+  2. Swing lever rapidly from side to side (~1 second per full sweep).
+  3. Continue for the full sample count (2000 reports).
+  4. Download CSV from Pico flash storage.
+
+Purpose: Measure how well the IMU tracks fast direction changes.
+Expected: Higher report rate should reduce phase lag during rapid reversals.
