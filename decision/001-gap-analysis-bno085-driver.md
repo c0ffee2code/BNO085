@@ -81,18 +81,34 @@ For a flight control system, we need:
 
 ## Project Milestones
 
-### Milestone 1: Tare calibration and bias validation
+### Milestone 1: Sensor calibration (PREREQUISITE for tare)
+- [ ] Calibrate magnetometer — rotate device in figure-8 until accuracy >= 2
+- [ ] Calibrate accelerometer — hold stable in 4-6 orientations for ~1s each
+- [ ] Calibrate gyroscope — set device down for a few seconds (gyro ZRO)
+- [ ] Save calibration with `save_calibration_data()`
+- [ ] Verify calibration accuracy values via `calibration_status()`
+- Reference: [BradCar test_calibration.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_calibration.py)
+- Reference: `specification/BNO080-BNO085-Sesnor-Calibration-Procedure.pdf`
+
+### Milestone 2: Tare calibration and bias validation
+**Depends on:** Milestone 1 (calibration must be done first)
+
+- [ ] Point the assembly toward magnetic North, ensure lever is level
 - [ ] Run `tare()` to zero out the ~2 deg systematic bias
 - [ ] Repeat static hold and slow moves tests at 344 Hz to confirm bias is gone
 - [ ] Verify slow motion MAE drops below 1 deg target
 - [ ] Persist tare with `save_tare_data()` for power-cycle survival
 - Reference: [BradCar test_tare.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_tare.py)
+- Reference: `specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf`
 
-### Milestone 2: Sensor calibration
-- [ ] Run full accelerometer/gyro/magnetometer calibration procedure
-- [ ] Save calibration with `save_calibration_data()`
-- [ ] Repeat baseline tests to measure improvement
-- Reference: [BradCar test_calibration.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_calibration.py)
+**Lesson learned:** All-axes tare (0x07) uses the Rotation Vector (0x05) which fuses
+accelerometer, gyroscope AND magnetometer. Taring without a calibrated magnetometer
+produces a broken reference frame — in our testing it inverted the roll axis, making
+the IMU read opposite to the encoder (correlation -0.99 instead of +0.99). The Tare
+Usage Guide (page 2, steps 2-6) requires magnetometer calibration, accelerometer
+calibration, gyro ZRO calibration, and pointing the device North before taring.
+This is not optional even for roll-only testing, because the all-axes tare quaternion
+depends on all three sensor inputs being correct.
 
 ### Milestone 3: Game Rotation Vector (0x08) comparison
 - [ ] Run rapid moves, slow moves, and static hold with Game RV at 344 Hz

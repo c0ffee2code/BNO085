@@ -1,0 +1,15 @@
+Tare calibration — before/after bias comparison at rest
+
+Setup: BNO085 on lever, AS5600 encoder on rotation axis as reference.
+       Lever fixed near zero with screwdriver (until zero jig is built).
+Procedure:
+  1. Fix the lever so it cannot move.
+  2. Run test_tare_and_measure.py.
+  3. Script collects 2000 samples before tare, applies tare, then collects 2000 after.
+  4. Download both CSVs from Pico flash.
+  5. Compare with: python analyse_report_rate.py tare_before.csv tare_after.csv
+
+Purpose: Confirm that tare removes the ~2 deg systematic bias seen in Experiment 1.
+Expected:
+  - Before tare: ~2 deg bias (matching Experiment 1 static hold results).
+  - After tare: bias drops to near zero, MAE drops to noise floor (~0.15 deg).
