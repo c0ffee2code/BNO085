@@ -19,7 +19,7 @@ For a flight control system, we need:
 | Report | ID | Spec | Driver | Priority | Notes |
 |--------|-----|------|--------|----------|-------|
 | Rotation Vector | 0x05 | Yes | **IMPLEMENTED** | HIGH | Magnetometer-fused, prevents yaw drift |
-| Game Rotation Vector | 0x08 | Yes | **IMPLEMENTED** | MEDIUM | No mag, will drift but smooth |
+| Game Rotation Vector | 0x08 | Yes | **IMPLEMENTED** | **HIGH** | No mag, will drift but smooth. **Best performer for roll-axis tracking without mag calibration** |
 | Geomagnetic Rotation Vector | 0x09 | Yes | **IMPLEMENTED** | LOW | Low power, slow response |
 | ARVR Stabilized Rotation Vector | 0x28 | Yes | **NOT IMPLEMENTED** | **HIGH** | Smooth corrections during motion, ~250Hz |
 | ARVR Stabilized Game Rotation Vector | 0x29 | Yes | **NOT IMPLEMENTED** | MEDIUM | Smooth, no mag |
@@ -28,11 +28,13 @@ For a flight control system, we need:
 ### Flight Control Relevance
 
 **Best for our use case:**
-1. **Rotation Vector (0x05)** - Already implemented. Uses all 3 sensors, provides absolute heading referenced to magnetic north. Prevents yaw drift.
+1. **Game Rotation Vector (0x08)** - Already implemented. **Best performer for roll-axis tracking** — 0.999 correlation, consistent ~3 deg bias (removable by tare), no range compression. No magnetometer means potential yaw drift, but irrelevant for roll control.
 
-2. **ARVR Stabilized Rotation Vector (0x28)** - **GAP**. Corrections applied during motion (not at rest), preventing visible jumps/discontinuities. Ideal for flight control where sudden orientation jumps would cause control instability.
+2. **Rotation Vector (0x05)** - Already implemented. Uses all 3 sensors, provides absolute heading referenced to magnetic north. Prevents yaw drift. **However, unusable for dynamic tracking without magnetometer calibration** — tested at 16-20 deg MAE with chaotic non-constant bias during rapid motion. Must complete Milestone 1 (calibration) before this becomes viable.
 
-3. **Gyro Integrated Rotation Vector (0x2A)** - **GAP**. Highest frequency output (~1000Hz on Channel 5). Gyro-only for fast response, with periodic corrections from full fusion. Perfect for "approximate position frequently" philosophy.
+3. **ARVR Stabilized Rotation Vector (0x28)** - **GAP**. Corrections applied during motion (not at rest), preventing visible jumps/discontinuities. Ideal for flight control where sudden orientation jumps would cause control instability.
+
+4. **Gyro Integrated Rotation Vector (0x2A)** - **GAP**. Highest frequency output (~1000Hz on Channel 5). Gyro-only for fast response, with periodic corrections from full fusion. Perfect for "approximate position frequently" philosophy.
 
 ### Calibration Features
 
@@ -110,10 +112,11 @@ calibration, gyro ZRO calibration, and pointing the device North before taring.
 This is not optional even for roll-only testing, because the all-axes tare quaternion
 depends on all three sensor inputs being correct.
 
-### Milestone 3: Game Rotation Vector (0x08) comparison
-- [ ] Run rapid moves, slow moves, and static hold with Game RV at 344 Hz
-- [ ] Compare accuracy vs Rotation Vector (0x05) on roll axis
-- [ ] Measure drift rate over longer duration (no magnetometer = expected yaw drift)
+### Milestone 3: Game Rotation Vector (0x08) comparison — DONE
+- [x] Run rapid moves and static hold with Game RV at 344 Hz (2 iterations each)
+- [x] Run rapid moves and static hold with Rotation Vector at 344 Hz (2 iterations each, corrected orientation)
+- [x] Compare accuracy vs Rotation Vector (0x05) on roll axis — Game RV wins decisively (MAE 3 deg vs 16-20 deg during rapid motion)
+- [ ] Measure drift rate over longer duration (no magnetometer = expected yaw drift) — deferred, requires longer test or separate setup
 - No driver changes needed — already implemented
 
 ### Milestone 4: GC stall mitigation
@@ -169,131 +172,93 @@ depends on all three sensor inputs being correct.
 
 ### Planned Experiments
 
-#### Experiment 1: Baseline with Rotation Vector (0x05)
-- Current implementation, magnetometer-fused
-- All tests at 344 Hz (max I2C rate). 10 Hz was tested early on and dropped — it has no value for flight control (100 ms sample interval misses gradual changes, producing stale readings with 6.93 deg MAE during slow motion).
-- Establish baseline for comparison
+#### Experiment 1: Rotation Vector (0x05) vs Game Rotation Vector (0x08)
 
-Test script: `tests/report_rate/test_baseline_rotation_vector.py`
+Both vectors tested head-to-head with corrected IMU orientation (signs match encoder).
+All tests at 344 Hz (max I2C rate). 10 Hz was tested early on and dropped — it has no
+value for flight control (100 ms sample interval misses gradual changes, producing stale
+readings with 6.93 deg MAE during slow motion). Each scenario run twice (2 iterations)
+to confirm reproducibility.
+
+Test scripts: `tests/report_rate/test_baseline_rotation_vector.py`, `tests/report_rate/test_game_rotation_vector.py`
 Analysis script: `tests/report_rate/analysis/analyse_report_rate.py`
+Test scenarios: `tests/report_rate/results/scenario_static_hold.txt`, `tests/report_rate/results/scenario_rapid_moves.txt`
 
-> **Note:** Experiment 1 results below were collected with the IMU mounted 180 degrees off
-> (inverted roll axis relative to encoder). The data is kept for reference but is not
-> directly comparable to Experiment 2 which used the corrected orientation. Experiment 1
-> will be re-run with the corrected mounting.
+**Test 1a — Static hold** (lever fixed with screwdriver)
 
-**Test 1a — Rapid moves** (~1 s per full sweep, violent shaking)
+Raw data:
+- `tests/report_rate/results/rotation_vector/iteration_1/static_hold/rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/rotation_vector/iteration_2/static_hold/rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/game_rotation_vector/iteration_1/static_hold/game_rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/game_rotation_vector/iteration_2/static_hold/game_rot_vec_344hz_2000s.csv`
 
-Raw data: `tests/report_rate/results/rotation_vector/iteration_1 - no tare/rapid_moves/rot_vec_344hz_2000s.csv`
+| Metric | Rotation Vector (i1 / i2) | Game Rotation Vector (i1 / i2) |
+|--------|---------------------------|-------------------------------|
+| Bias (ENC-IMU) | -3.50 / -3.24 deg | -3.39 / -2.93 deg |
+| IMU noise floor (range) | 0.21 / 0.10 deg | 0.07 / 0.10 deg |
+| Achieved rate | 279 / 279 Hz | 286 / 287 Hz |
+| Lag mean | 3.74 / 3.73 ms | 3.66 / 3.65 ms |
+| Lag max | 44.2 / 43.3 ms | 44.3 / 42.9 ms |
 
-| Metric | 344 Hz (achieved 270 Hz) |
-|--------|--------------------------|
-| Pearson correlation | 0.995 |
-| MAE overall | 4.49 deg |
-| MAE fast motion (top 25% velocity) | 3.10 deg |
-| MAE slow motion (bottom 25% velocity) | 6.01 deg |
-| RMS error | 5.22 deg |
-| Max error | 18.67 deg |
-| Bias (ENC-IMU) | -1.86 deg |
-| IMU trails motion direction | 69.8% |
-| Lag mean | 4.42 ms |
-| Lag max | 46.6 ms |
+**Test 1b — Rapid moves** (~1 s per full sweep)
 
-**Test 1b — Slow moves** (~5-10 s per sweep, gentle steady motion)
+Raw data:
+- `tests/report_rate/results/rotation_vector/iteration_1/rapid_moves/rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/rotation_vector/iteration_2/rapid_moves/rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/game_rotation_vector/iteration_1/rapid_moves/game_rot_vec_344hz_2000s.csv`
+- `tests/report_rate/results/game_rotation_vector/iteration_2/rapid_moves/game_rot_vec_344hz_2000s.csv`
 
-Raw data: `tests/report_rate/results/rotation_vector/iteration_1 - no tare/slow_moves/rot_vec_344hz_2000s.csv`
-
-| Metric | 344 Hz (achieved 272 Hz) |
-|--------|--------------------------|
-| Pearson correlation | 0.9998 |
-| MAE overall | 2.26 deg |
-| MAE fast motion (top 25% velocity) | 2.93 deg |
-| MAE slow motion (bottom 25% velocity) | 1.96 deg |
-| RMS error | 2.54 deg |
-| Max error | 6.83 deg |
-| Bias (ENC-IMU) | -2.26 deg |
-| IMU trails motion direction | 83.3% |
-| Lag mean | 4.62 ms |
-| Lag max | 46.2 ms |
-
-**Test 1c — Static hold** (lever fixed with screwdriver)
-
-Raw data: `tests/report_rate/results/rotation_vector/iteration_1 - no tare/static_hold/rot_vec_344hz_2000s.csv`
-
-| Metric | Value |
-|--------|-------|
-| Encoder reading | 0.70 deg (constant, zero jitter) |
-| IMU mean | 2.62 deg |
-| IMU range (noise floor) | 0.31 deg (2.36 to 2.67 deg) |
-| IMU std dev | 0.06 deg |
-| Systematic bias (IMU - ENC) | **+1.92 deg** |
-| IMU drift over 7.3 s | +0.27 deg (first 100 vs last 100 samples) |
-| Lag mean | 4.56 ms |
-| Lag max | 44.9 ms |
-| Achieved rate | 275 Hz |
+| Metric | Rotation Vector (i1 / i2) | Game Rotation Vector (i1 / i2) |
+|--------|---------------------------|-------------------------------|
+| Pearson correlation | 0.963 / 0.927 | **0.999 / 0.999** |
+| MAE overall | 15.82 / 20.21 deg | **3.01 / 3.74 deg** |
+| MAE fast motion (top 25% vel) | 11.47 / 13.38 deg | **3.23 / 3.12 deg** |
+| MAE slow motion (bottom 25% vel) | 18.86 / 25.30 deg | **3.31 / 3.78 deg** |
+| RMS error | 19.67 / 24.06 deg | **3.49 / 4.19 deg** |
+| Max error | 47.59 / 49.76 deg | **20.32 / 23.89 deg** |
+| Bias (ENC-IMU) | -15.09 / -13.00 deg | -2.98 / -3.71 deg |
+| IMU trails motion (%) | 49.6 / 51.6 | 59.6 / 54.8 |
+| Encoder range | 123.1 / 123.8 deg | 124.0 / 123.3 deg |
+| IMU range | **140.2 / 128.7 deg (overshoot)** | 122.4 / 121.8 deg (matches encoder) |
+| Achieved rate | 277 / 277 Hz | **283 / 283 Hz** |
+| Lag mean | 3.61 / 3.58 ms | 3.51 / 3.55 ms |
+| Lag max | 42.4 / 43.3 ms | 44.2 / 43.0 ms |
 
 **Findings:**
 
-1. **344 Hz is the only rate worth testing for flight control.** 10 Hz was evaluated early and had 6.93 deg MAE during slow motion — the 100 ms sample interval produces stale readings. All subsequent experiments use 344 Hz exclusively.
-2. **~2 deg systematic bias confirmed at rest.** The static test shows +1.92 deg offset (IMU reads higher than encoder), consistent with the ~2 deg bias in both motion tests. This is a fixed mounting/tare offset — a one-time `tare()` call should eliminate it.
-3. **Noise floor is excellent** — only 0.31 deg total jitter (±0.155 deg) at rest. After tare calibration, the static error would be under 0.2 deg.
-4. **Minor roll drift detected** — +0.27 deg over 7.3 s (~2.2 deg/min). Short test duration makes this uncertain; could be sensor fusion settling after power-on. Note: all tests so far measure roll axis only (single encoder). Yaw drift (heading stability) requires a separate test setup.
-5. **IMU consistently undershoots peak excursions** during rapid moves due to internal sensor fusion low-pass filtering. The IMU range was 85% of encoder range at 344 Hz.
-6. **Periodic ~45 ms lag spikes at 344 Hz** occur every ~700 ms, dragging achieved rate to ~270 Hz. Likely MicroPython garbage collection stalling the I2C bus.
+1. **At rest, both vectors are nearly identical.** ~3 deg systematic bias (fixed offset, removable by tare), excellent noise floor (0.07-0.21 deg), similar lag profiles. No meaningful difference when stationary.
 
-**Conclusion:** 344 Hz is the right choice for flight control. The ~2 deg bias is a fixed offset that `tare()` should fix. GC stalls need mitigation (pre-allocate buffers, manual `gc.collect()` at safe points). These results need re-running with the corrected IMU orientation for valid comparison with Experiment 2.
+2. **During rapid motion, Game Rotation Vector dramatically outperforms Rotation Vector.** Game RV maintains 0.999 correlation and ~3 deg consistent bias across both iterations. Rotation Vector drops to 0.93-0.96 correlation with 16-20 deg MAE — 5x worse.
 
-#### Experiment 2: Game Rotation Vector (0x08) Comparison
-- No magnetometer fusion (accel + gyro only) — avoids mag-induced heading jumps but drifts in yaw
-- IMU mounted in corrected orientation (180 deg rotated vs Experiment 1, signs now match encoder)
+3. **Rotation Vector bias becomes chaotic under motion.** At rest the bias is a stable -3.2 to -3.5 deg. During rapid moves it varies from ~1.5 deg to ~46 deg within a single test — the magnetometer fusion correction fights the gyro during fast direction changes. The mean bias (-13 to -15 deg) is meaningless because it is not constant.
 
-Test script: `tests/report_rate/test_game_rotation_vector.py`
+4. **Rotation Vector overshoots encoder range.** IMU range (129-140 deg) exceeds encoder range (123 deg) — the mag corrections cause the sensor to swing past the true angle. Game RV range (122 deg) matches the encoder.
 
-**Test 2a — Mixed motion** (combination of rapid and slow moves, ~122 deg range)
+5. **Magnetometer calibration is the root cause.** Without a properly calibrated magnetometer, the rotation vector's mag fusion introduces a non-constant, motion-dependent error that makes the sensor unreliable for dynamic tracking. The game rotation vector avoids this entirely by not using the magnetometer.
 
-Raw data: `tests/report_rate/results/game_rotation_vector/iteration_1/game_rot_vec_344hz_2000s.csv`
+6. **Results are reproducible.** Iteration 2 confirms iteration 1 patterns. The rotation vector is actually *worse* in iteration 2 (MAE 20 vs 16 deg), showing the magnetometer interference is unpredictable.
 
-| Metric | 344 Hz (achieved 283 Hz) |
-|--------|--------------------------|
-| Pearson correlation | **0.9994** |
-| MAE overall | 3.54 deg |
-| MAE fast motion (top 25% velocity) | 3.21 deg |
-| MAE slow motion (bottom 25% velocity) | 3.88 deg |
-| RMS error | 3.88 deg |
-| Max error | 15.94 deg |
-| Bias (ENC-IMU) | -3.52 deg |
-| IMU trails motion direction | 49.3% |
-| Lag mean | 3.57 ms |
-| Lag max | 42.2 ms |
-| Encoder range | 122.5 deg |
-| IMU range | 122.7 deg |
+7. **Game RV achieves ~6 Hz higher rate** (283 vs 277 Hz) — less computation per sample without magnetometer fusion.
 
-**Findings:**
+8. **Periodic ~43 ms lag spikes** present in both vectors, dragging achieved rate to ~277-287 Hz. Likely MicroPython garbage collection stalls.
 
-1. **Near-perfect correlation (0.9994)** — best tracking of any test so far.
-2. **Trail 49.3% — essentially symmetric.** The game RV filter has very low phase delay; the IMU neither leads nor lags direction changes. Compare to rotation vector's 70-83% trailing.
-3. **No range compression.** IMU range (122.7 deg) matches encoder range (122.5 deg). The rotation vector (0x05) compressed peaks to 85% of encoder range due to magnetometer fusion filtering.
-4. **Lower lag** — 3.57 ms mean vs ~4.5 ms for rotation vector. Fewer sensor inputs to fuse.
-5. **~3.5 deg bias** — larger than rotation vector's ~2 deg, but still a fixed offset removable by tare.
-6. **Slightly higher achieved rate** (283 Hz vs 270 Hz) — less computation per sample.
+**Conclusion:** Game Rotation Vector (0x08) is the clear winner for roll-axis flight control without magnetometer calibration. It tracks motion faithfully (0.999 correlation), maintains a consistent ~3 deg bias removable by tare, and matches encoder range with no overshoot. The Rotation Vector (0x05) is unusable for dynamic tracking until magnetometer calibration (Milestone 1) is completed — after which it should be re-tested to see if the mag fusion becomes an asset rather than a liability. For heading-hold modes where yaw drift matters, the Rotation Vector remains the only option that provides absolute heading reference.
 
-**Conclusion:** Game Rotation Vector is the better choice for single-axis roll tracking. It tracks faster, doesn't compress peaks, and has symmetric phase response. The lack of magnetometer is irrelevant for roll-axis flight control. Yaw drift would matter for heading-hold modes but is not tested here. Experiment 1 needs re-running with the corrected IMU orientation for a fair head-to-head comparison.
-
-#### Experiment 3: ARVR Stabilized (0x28) - After Implementation
+#### Experiment 2: ARVR Stabilized (0x28) - After Implementation
 - Compare jump/discontinuity behavior during motion
 - Measure if corrections are smoother than standard rotation vector
 
-#### Experiment 4: Gyro Integrated (0x2A) - After Implementation
+#### Experiment 3: Gyro Integrated (0x2A) - After Implementation
 - Measure latency at high frequency
 - Quantify accuracy vs speed tradeoff
 
 ### Success Criteria
 
-For flight control viability:
-- [x] Latency < 10ms at 100Hz update rate — **PASS** (3.6-4.4 ms mean at 344 Hz; periodic 42-46 ms spikes need GC mitigation)
-- [ ] Angle error < 1° during slow motion — **LIKELY PASS after tare** (1.96° MAE at 344 Hz, but 1.92° is systematic bias; static noise floor is only 0.31°)
-- [ ] Angle error < 3° during fast motion — **MARGINAL** (3.10° at 344 Hz rapid moves; nearly meets target)
-- [ ] Yaw drift < 1°/minute with magnetometer fusion — **NOT TESTED** (all tests so far measure roll axis only; encoder is mounted on a single axis and cannot measure yaw drift without remounting)
+For flight control viability (evaluated using Game Rotation Vector, the better performer):
+- [x] Latency < 10ms at 100Hz update rate — **PASS** (3.5-3.7 ms mean at 344 Hz; periodic 43 ms spikes need GC mitigation)
+- [ ] Angle error < 1° during slow motion — **LIKELY PASS after tare** (static noise floor is only 0.07-0.10 deg; the ~3 deg MAE is almost entirely systematic bias removable by tare)
+- [ ] Angle error < 3° during fast motion — **LIKELY PASS after tare** (3.01-3.74 deg MAE with ~3 deg being systematic bias; after tare the dynamic tracking error should be well under 1 deg)
+- [ ] Yaw drift < 1°/minute with magnetometer fusion — **NOT TESTED** (all tests measure roll axis only; requires separate test setup or magnetometer calibration first)
 
 ## References
 

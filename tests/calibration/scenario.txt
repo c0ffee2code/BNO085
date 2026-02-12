@@ -1,0 +1,19 @@
+Sensor calibration — accelerometer, gyroscope, magnetometer
+
+Setup: BNO085 detached from lever (needs to be rotated freely).
+       Perform in a magnetically clean area (away from PC towers, monitors, metal).
+Procedure:
+  1. Run test_calibration.py.
+  2. Accelerometer: hold device in 4-6 orientations for ~1s each (cube method).
+  3. Gyroscope: set device on flat surface, leave still for 2-3 seconds.
+  4. Magnetometer: rotate ~180 deg and back on each axis (roll, pitch, yaw)
+     at ~2 seconds per rotation. Repeat until accuracy >= 2.
+  5. Script auto-saves when all sensors hold accuracy >= 2 for 5 seconds.
+  6. Re-mount IMU on lever assembly.
+
+Purpose: Calibrate all three sensors so tare (Milestone 2) can compute a correct
+reference frame. Without calibration, all-axes tare produces broken coordinate
+systems (inverted roll axis observed in testing).
+
+Expected: All sensors reach accuracy 2 (medium) or 3 (high) within 1-2 minutes.
+Calibration data persists in BNO085 flash across power cycles.
