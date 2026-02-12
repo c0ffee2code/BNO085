@@ -289,7 +289,7 @@ DEFAULT_REPORT_FREQ = {
     BNO_REPORT_UNCALIBRATED_MAGNETOMETER: 20,
     BNO_REPORT_ARVR_STABILIZED_ROTATION_VECTOR: 10,
     BNO_REPORT_ARVR_STABILIZED_GAME_ROTATION_VECTOR: 10,
-    BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR: 10,
+    BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR: 1000,
 }
 
 # pre-calculate the reciprocals
@@ -298,6 +298,7 @@ _Q_POINT_12_SCALAR = 2 ** (12 * -1)
 _Q_POINT_9_SCALAR = 2 ** (9 * -1)
 _Q_POINT_8_SCALAR = 2 ** (8 * -1)
 _Q_POINT_4_SCALAR = 2 ** (4 * -1)
+_Q_POINT_10_SCALAR = 2 ** (10 * -1)
 
 _REPORT_LENGTHS = {
     # Sensor Reports
@@ -445,6 +446,7 @@ _INITIAL_REPORTS = {
     BNO_REPORT_RAW_MAGNETOMETER: (0, 0, 0, 0),
     BNO_REPORT_ARVR_STABILIZED_ROTATION_VECTOR: (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0),
     BNO_REPORT_ARVR_STABILIZED_GAME_ROTATION_VECTOR: (0.0, 0.0, 0.0, 0.0, 0, 0.0),
+    BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     BNO_REPORT_STEP_COUNTER: 0,
 }
 
@@ -957,8 +959,30 @@ class BNO08X:
             elif channel == 1:  # all reports on channel 5 are single report packets
                 self._process_control_report(p_mv[0], p_mv)
 
-            elif channel == 5:  # gyro rotation vector reports on channel 5 are single report packets
-                raise NotImplementedError(f"gyro rotation vector ({hex(report_id)}) is not supported yet.")
+            elif channel == 5:  # gyro integrated rotation vector, 14 bytes raw int16, no report ID/status/delay
+                SIGN_BIT = 32768
+                Q14 = _Q_POINT_14_SCALAR
+                Q10 = _Q_POINT_10_SCALAR
+                p = p_mv
+                # Quaternion i, j, k, real (Q14) — bytes 0-7
+                r = p[0] | (p[1] << 8)
+                qi = (r - ((r & SIGN_BIT) << 1)) * Q14
+                r = p[2] | (p[3] << 8)
+                qj = (r - ((r & SIGN_BIT) << 1)) * Q14
+                r = p[4] | (p[5] << 8)
+                qk = (r - ((r & SIGN_BIT) << 1)) * Q14
+                r = p[6] | (p[7] << 8)
+                qr = (r - ((r & SIGN_BIT) << 1)) * Q14
+                # Angular velocity x, y, z (Q10) — bytes 8-13
+                r = p[8] | (p[9] << 8)
+                ax = (r - ((r & SIGN_BIT) << 1)) * Q10
+                r = p[10] | (p[11] << 8)
+                ay = (r - ((r & SIGN_BIT) << 1)) * Q10
+                r = p[12] | (p[13] << 8)
+                az = (r - ((r & SIGN_BIT) << 1)) * Q10
+                ts = ticks_diff(self.ms_at_interrupt, self._epoch_start_ms)
+                report_values[BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR] = (qr, qi, qj, qk, ax, ay, az, ts)
+                unread_report_count[BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR] += 1
 
         return processed_count
 
@@ -1004,6 +1028,11 @@ class BNO08X:
         while roll and pitch are referenced against gravity. To prevent sudden jumps in heading due to corrections,
         the `game_quaternion` property is not corrected using the magnetometer. Drift is expected ! """
         return self._get_feature(BNO_REPORT_GAME_ROTATION_VECTOR, SensorFeature4)
+
+    @property
+    def gyro_integrated_rotation_vector(self):
+        """Gyro Integrated Rotation Vector — quaternion + angular velocity at up to 1000 Hz"""
+        return self._get_feature(BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR, SensorFeature4)
 
     # raw reports to not support .full
     @property
