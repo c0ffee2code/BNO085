@@ -61,8 +61,8 @@ For a flight control system, we need:
 | Interface | Spec | Driver | Priority | Notes |
 |-----------|------|--------|----------|-------|
 | I2C | Yes | **IMPLEMENTED** | HIGH | Current implementation, up to 344Hz quaternion |
-| SPI | Yes | **NOT IMPLEMENTED** | MEDIUM | 8x faster than I2C |
-| UART | Yes | **NOT IMPLEMENTED** | LOW | RVC mode available |
+| SPI | Yes | **IMPLEMENTED** | MEDIUM | 8x faster than I2C.|
+| UART | Yes | NOT IMPLEMENTED | LOW | UART-SHTP (not RVC) at 3 Mbaud, but multi-packet reads are incomplete. No benefit over SPI for our use case |
 | Channel 5 (High-speed Gyro) | Yes | **NOT IMPLEMENTED** | HIGH | Required for Gyro Integrated RV |
 
 ### Other Sensor Reports
@@ -134,9 +134,9 @@ depends on all three sensor inputs being correct.
 - [ ] Complete report 0x2A implementation
 - [ ] Test at ~1000 Hz, measure latency and accuracy vs speed tradeoff
 
-### Milestone 7: Consider SPI (Optional)
-- [ ] Revisit after Milestones 4-6 — if I2C bandwidth is still limiting
-- [ ] 8x faster throughput, enables higher update rates
+### Milestone 7: SPI interface
+- [x] SPI driver available — copied from BradCar repo (`driver/spi.py`)
+- [ ] Test SPI vs I2C at 344 Hz — measure if achieved rate improves (currently ~277-287 Hz on I2C)
 - [ ] See ADR-002 for full analysis
 
 ## Your Assumption Validation

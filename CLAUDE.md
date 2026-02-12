@@ -26,6 +26,7 @@ This project performs **gap analysis between the BNO08X specification and the ex
 
 - `driver/bno08x.py` - Main BNO08X driver with SHTP protocol implementation, sensor feature managers, and data parsing
 - `driver/i2c.py` - I2C-specific subclass (`BNO08X_I2C`) with interrupt-driven packet reading
+- `driver/spi.py` - SPI-specific subclass (`BNO08X_SPI`) with interrupt and wake pin support
 - `specification/IMU BNO08x v1.17.pdf` - Official sensor datasheet
 
 ### Key Classes
