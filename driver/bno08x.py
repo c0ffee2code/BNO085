@@ -890,7 +890,7 @@ class BNO08X:
 
             # fast path for timestamp & reports in a single packet, inlined from self._process_report
             if channel == 3 and report_id == _BASE_TIMESTAMP:
-                self._last_base_timestamp_us = (p_mv[1] | (p_mv[2] << 8) | (p_mv[3] << 16) | (p_mv[4] << 24)) * 100
+                self._last_base_timestamp_us = unpack_from("<i", p_mv, 1)[0] * 100
                 packet_base_ms = ticks_diff(self.ms_at_interrupt, self._epoch_start_ms) - (
                         self._last_base_timestamp_us * FP_TO_MS)
                 report_index += 5  # _BASE_TIMESTAMP is 5 bytes
@@ -1308,14 +1308,12 @@ class BNO08X:
 
         # Base Timestamp (0xfb)
         if report_id == _BASE_TIMESTAMP:
-            self._last_base_timestamp_us = (report_bytes[1] | (report_bytes[2] << 8) | (
-                    report_bytes[3] << 16) | (report_bytes[4] << 24)) * 100
+            self._last_base_timestamp_us = unpack_from("<i", report_bytes, 1)[0] * 100
             return
 
         # Timestamp Rebase (0xfa), this sent when _BASE_TIMESTAMP wraps
         if report_id == _TIMESTAMP_REBASE:
-            self._last_base_timestamp_us = (report_bytes[1] | (report_bytes[2] << 8) | (
-                    report_bytes[3] << 16) | (report_bytes[4] << 24)) * 100
+            self._last_base_timestamp_us += unpack_from("<i", report_bytes, 1)[0] * 100
             return
 
         #  **** Process all control reports, catchall if processing sensor reports
@@ -1376,14 +1374,12 @@ class BNO08X:
         """ Process control reports. These are only on Channel 0, 1, or 2 """
         # Base Timestamp (0xfb)
         if report_id == _BASE_TIMESTAMP:
-            self._last_base_timestamp_us = (report_bytes[1] | (report_bytes[2] << 8) | (
-                    report_bytes[3] << 16) | (report_bytes[4] << 24)) * 100
+            self._last_base_timestamp_us = unpack_from("<i", report_bytes, 1)[0] * 100
             return
 
         # Timestamp Rebase (0xfa), this sent when _BASE_TIMESTAMP wraps
         if report_id == _TIMESTAMP_REBASE:
-            self._last_base_timestamp_us = (report_bytes[1] | (report_bytes[2] << 8) | (
-                    report_bytes[3] << 16) | (report_bytes[4] << 24)) * 100
+            self._last_base_timestamp_us += unpack_from("<i", report_bytes, 1)[0] * 100
             return
 
         # Feature response (0xfc) - This report issued when feature is enabled or updated
