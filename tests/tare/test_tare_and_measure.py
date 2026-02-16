@@ -126,12 +126,13 @@ def collect_samples(output_file):
     count = 0
 
     f = open(output_file, "w")
-    f.write("T,ENC,IMU,Lag\n")
+    f.write("T,ENC,IMU,Lag,ENC_RAW\n")
 
     try:
         while count < SAMPLES_PER_PHASE:
             now_ms = ticks_ms()
-            encoder_angle = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
+            raw_angle = encoder.read_raw_angle()
+            encoder_angle = to_degrees(raw_angle, AXIS_CENTER)
 
             if imu.update_sensors() > 0:
                 pass
@@ -141,7 +142,7 @@ def collect_samples(output_file):
                 imu_now_ms = imu.bno_start_diff(now_ms)
                 lag = imu_now_ms - ts_ms
                 elapsed = ticks_diff(now_ms, start_ms)
-                f.write(f"{elapsed},{encoder_angle:.2f},{roll:.2f},{lag:.1f}\n")
+                f.write(f"{elapsed},{encoder_angle:.2f},{roll:.2f},{lag:.1f},{raw_angle}\n")
                 count += 1
     except KeyboardInterrupt:
         pass
