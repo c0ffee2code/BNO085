@@ -63,7 +63,7 @@ For a flight control system, we need:
 | I2C | Yes | **IMPLEMENTED** | HIGH | Current implementation, up to 344Hz quaternion |
 | SPI | Yes | **IMPLEMENTED** | MEDIUM | 8x faster than I2C.|
 | UART | Yes | NOT IMPLEMENTED | LOW | UART-SHTP (not RVC) at 3 Mbaud, but multi-packet reads are incomplete. No benefit over SPI for our use case |
-| Channel 5 (High-speed Gyro) | Yes | **NOT IMPLEMENTED** | HIGH | Required for Gyro Integrated RV |
+| Channel 5 (High-speed Gyro) | Yes | **IMPLEMENTED** | HIGH | Required for Gyro Integrated RV |
 
 ### Other Sensor Reports
 
@@ -119,24 +119,34 @@ depends on all three sensor inputs being correct.
 - [ ] Measure drift rate over longer duration (no magnetometer = expected yaw drift) — deferred, requires longer test or separate setup
 - No driver changes needed — already implemented
 
-### Milestone 4: GC stall mitigation
+### Milestone 4: Timestamping QA — DONE
+- [x] Audit driver timestamp implementation against SH-2 spec (sections 6.5.1, 7.2)
+- [x] Fix signed parsing: replace unsigned byte assembly with `unpack_from("<i")` at all 5 sites
+- [x] Fix rebase accumulation: 0xFA handler uses `+=` instead of `=` per SH-2 7.2.2
+- [x] Regression test: static hold at 344 Hz confirms no change in normal operation
+- QA report: `qa_report/timestamping.md`
+
+### Milestone 5: GC stall mitigation
 - [ ] Profile the ~45 ms periodic spikes (confirm they are MicroPython GC)
 - [ ] Pre-allocate buffers, use manual `gc.collect()` at safe points
 - [ ] Re-test at 344 Hz, target achieved rate closer to 344 Hz with no spikes >10 ms
 
-### Milestone 5: ARVR Stabilized Rotation Vector (0x28)
+### Milestone 6: ARVR Stabilized Rotation Vector (0x28)
 - [ ] Implement report 0x28 in driver
 - [ ] Run rapid moves test, compare discontinuity behaviour vs standard RV
 - [ ] Evaluate for flight control loop suitability
 
-### Milestone 6: Gyro Integrated Rotation Vector (0x2A)
-- [ ] Implement Channel 5 (high-speed gyro) support in driver
-- [ ] Complete report 0x2A implementation
-- [ ] Test at ~1000 Hz, measure latency and accuracy vs speed tradeoff
+### Milestone 7: Gyro Integrated Rotation Vector (0x2A) — PARTIAL
+- [x] Implement Channel 5 (high-speed gyro) support in driver
+- [x] Complete report 0x2A implementation and parsing
+- [x] Test on I2C — achieves ~333 Hz (I2C bandwidth limit, spec max is 1000 Hz)
+- [ ] Test on SPI to reach full 1000 Hz potential
+- See ADR-003 for details
 
-### Milestone 7: SPI interface
+### Milestone 8: SPI interface
 - [x] SPI driver available — copied from BradCar repo (`driver/spi.py`)
 - [ ] Test SPI vs I2C at 344 Hz — measure if achieved rate improves (currently ~277-287 Hz on I2C)
+- [ ] Test Gyro Integrated RV at 1000 Hz over SPI
 - [ ] See ADR-002 for full analysis
 
 ## Your Assumption Validation

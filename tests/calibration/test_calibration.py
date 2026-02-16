@@ -52,34 +52,51 @@ imu = BNO08X_I2C(i2c, address=0x4a, reset_pin=reset_pin, int_pin=int_pin, debug=
 imu.acceleration.enable(20)
 imu.gyro.enable(20)
 imu.magnetic.enable(50)
+imu.game_quaternion.enable(20)  # Required by spec — fusion must run for calibration to converge
 
 # === Begin calibration mode ===
 imu.begin_calibration()
 imu.calibration_status()
 
-# === Guide the user ===
-print("""
-=== BNO085 Sensor Calibration ===
+# === Helper: drain sensor packets while waiting for user ===
+def wait_for_enter(message):
+    """Print instructions, then drain sensor data until user presses ENTER.
+    Uses non-blocking stdin poll so update_sensors() keeps running."""
+    import select
+    import sys
+    print(message)
+    while True:
+        imu.update_sensors()
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            return
 
-Perform the following motions with the IMU board:
+# === Guide the user step by step ===
+print("\n=== BNO085 Sensor Calibration ===\n")
 
-  STEP 1 — Accelerometer (cube method):
-    Hold the device in 4-6 different orientations for ~1 second each.
-    Imagine the board is a cube — place each face down in turn.
-    Order doesn't matter. 4-5 faces is usually enough.
+wait_for_enter(
+    "  STEP 1 — Accelerometer (cube method):\n"
+    "    Hold the device in 4-6 different orientations, at least 1 second each.\n"
+    "    Imagine the board is a cube — place each face down in turn.\n"
+    "    Order doesn't matter. 4-5 faces is usually enough.\n\n"
+    "    Press ENTER when done.")
 
-  STEP 2 — Gyroscope:
-    Set the device down on a flat surface and leave it still for 2-3 seconds.
+wait_for_enter(
+    "\n  STEP 2 — Gyroscope:\n"
+    "    Set the device down on a flat surface and leave it still for 2-3 seconds.\n\n"
+    "    Press ENTER when done.")
 
-  STEP 3 — Magnetometer:
-    Rotate the device ~180 degrees and back on each axis:
-      - Roll (twist left-right)
-      - Pitch (tilt forward-back)
-      - Yaw (turn like a compass)
-    Speed: ~2 seconds per rotation. Repeat until accuracy reaches 2 or 3.
+wait_for_enter(
+    "\n  STEP 3 — Magnetometer:\n"
+    "    Rotate the device ~180 degrees and back on each axis:\n"
+    "      - Roll (twist left-right)\n"
+    "      - Pitch (tilt forward-back)\n"
+    "      - Yaw (turn like a compass)\n"
+    "    Speed: ~2 seconds per rotation. Repeat a few times.\n\n"
+    "    Press ENTER when done.")
 
-Watch the accuracy readings below. Target: all three sensors >= 2.
-""")
+print("\n  Monitoring accuracy. Target: all three sensors >= 2.\n"
+      "  Keep adjusting if needed — the script will guide you.\n")
 
 # === Monitor calibration progress ===
 start_good = None

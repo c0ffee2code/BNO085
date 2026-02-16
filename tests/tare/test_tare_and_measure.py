@@ -34,10 +34,10 @@ Tare per BNO08X spec (Section 4.1.1, page 42):
     survives power cycles.
   - The spec warns: "the BNO08X must have resolved magnetic North before applying
     the tare function. Otherwise when the magnetometer calibrates the heading will
-    change." This matters for yaw axis accuracy. For our current roll-axis-only
-    tests we ignore this requirement — the roll angle is determined by the
-    accelerometer and gyroscope, not the magnetometer. We will revisit magnetometer
-    readiness when testing yaw.
+    change." The script checks magnetometer accuracy >= 2 before taring (Tare
+    Usage Guide p2, step 2a). This uses the 0-3 status bits as a proxy — the
+    spec's recommended threshold (accuracy estimate < 0.1745 rad) requires the
+    5th Rotation Vector field which is not yet parsed by the driver.
 
 References:
   - specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf (command byte tables, pages 2-3)
@@ -71,6 +71,40 @@ reset_pin = Pin(2, Pin.OUT)
 int_pin = Pin(3, Pin.IN, Pin.PULL_UP)
 imu = BNO08X_I2C(i2c, address=0x4a, reset_pin=reset_pin, int_pin=int_pin, debug=False)
 imu.quaternion.enable(RATE_HZ)
+
+# === Magnetometer readiness check ===
+# Tare Usage Guide p2: "the BNO08X must have resolved magnetic North before
+# applying the tare function." The spec recommends checking accuracy estimate
+# < 0.1745 rad, but the driver exposes the 0-3 status bits (not radians).
+# Accuracy >= 2 (medium) confirms the mag has resolved North — same threshold
+# we validated during calibration.
+MAG_ACC_MIN = const(2)
+MAG_TIMEOUT_MS = const(30_000)
+imu.magnetic.enable(20)
+print("\nChecking magnetometer readiness (accuracy >= 2)...")
+print("After power cycle the sensor re-validates its stored calibration.")
+print("Slowly rotate the device in a small figure-8 to help the mag re-engage.\n")
+mag_ready = False
+mag_start = ticks_ms()
+while ticks_diff(ticks_ms(), mag_start) < MAG_TIMEOUT_MS:
+    imu.update_sensors()
+    if imu.magnetic.updated:
+        _, _, _, mag_acc, _ = imu.magnetic.full
+        elapsed_s = ticks_diff(ticks_ms(), mag_start) / 1000.0
+        remaining_s = MAG_TIMEOUT_MS / 1000.0 - elapsed_s
+        if mag_acc >= MAG_ACC_MIN:
+            print(f"  Magnetometer accuracy: {mag_acc} — ready.")
+            mag_ready = True
+            break
+        print(f"  Magnetometer accuracy: {mag_acc} — waiting... ({remaining_s:.0f}s remaining)")
+    sleep_ms(500)
+
+if not mag_ready:
+    print(f"\n  WARNING: Magnetometer did not reach accuracy >= 2 within {MAG_TIMEOUT_MS // 1000}s.")
+    print("  All-axes tare may produce a broken reference frame.")
+    proceed = input("  Continue anyway? [y/N]: ").strip().lower()
+    if proceed != "y":
+        raise SystemExit("Aborted — run calibration first.")
 
 # === Let sensor fusion settle ===
 print(f"\nWaiting {SETTLE_SECS}s for sensor fusion to settle...")
