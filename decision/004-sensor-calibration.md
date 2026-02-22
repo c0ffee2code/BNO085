@@ -200,15 +200,55 @@ is the authoritative source for which commands generate responses.
 3. Changed `_send_tare_command` from fire-and-forget to waiting for `_tare_completed_at`,
    matching the pattern used by `save_calibration_data` for DCD responses
 
+### Bug 4 — Rotation Vector basis corrupts tare when mag_acc=0
+
+**Symptom:** After tare, the test bench is permanently at ~45 deg tilt despite the IMU
+roll reading correctly (~0 deg) during the pre-tare settle phase.
+
+**Root cause:** `imu.tare(0x07, 0)` uses Rotation Vector (basis=0) as the tare reference
+frame. The Rotation Vector fuses accelerometer, gyroscope **and magnetometer**. When the
+bench is in a different magnetic environment from where the magnetometer was last calibrated
+(near motors, ESCs, or metal structures), `mag_acc=0` throughout the settle period.
+The BNO085 still attempts to use the magnetometer heading — which points to an arbitrary
+"North" — and bakes that arbitrary ~45 deg heading into the tare quaternion. After tare,
+all Rotation Vector outputs are referenced to this corrupted frame.
+
+**Fix:** Change tare basis from 0 (Rotation Vector) to 1 (Game Rotation Vector):
+
+```python
+imu.tare(0x07, 1)  # basis=1 = Game Rotation Vector, no magnetometer
+```
+
+Switch all data collection from `imu.quaternion` (Rotation Vector) to
+`imu.game_quaternion` (Game Rotation Vector) for consistency. Game RV was already proven
+as the better dynamic performer (0.999 vs 0.93–0.96 correlation, ADR-001 Experiment 1).
+
+**Simplification:** With Game RV basis, magnetometer accuracy is no longer a prerequisite
+for tare. The entire Phase 0 (mag cal figure-8, sensor detached) is eliminated from
+`test_tare_and_measure.py`. The sensor reset between phases is also eliminated (it was
+only needed to clear Phase 0 gyro drift). The procedure reduces to two phases:
+
+1. **Phase 1 — sensor attached:** Enable `game_quaternion` at 344 Hz, settle 10 s, collect
+   pre-tare samples.
+2. **Phase 2 — tare + verify:** Apply tare (basis=1), drain response, collect post-tare
+   samples, optionally persist.
+
+For yaw accuracy (absolute heading), recalibrate the magnetometer in the operating
+environment with `tests/calibration/test_calibration_mag.py` and switch back to basis=0.
+
 ### Tare procedure — physical phases
 
 Mag calibration (figure-8 motion) is physically incompatible with the sensor being fixed to
-the test bench. The tare procedure is split into two phases in `test_tare_and_measure.py`:
+the test bench. The original tare procedure was split into three phases in
+`test_tare_and_measure.py` (Phase 0 detached, Phase 1 attached + reset, Phase 2 tare).
 
-1. **Phase 0 — sensor detached:** Enable mag (50 Hz) + `begin_calibration()`, perform figure-8
-   until accuracy >= 2. No save needed (previous `test_calibration_mag.py` run already saved DCD).
-2. **Phase 1 — sensor attached:** `wait_for_enter` prompt, enable quaternion at 344 Hz, settle
-   5 s, collect pre-tare samples, apply tare, collect post-tare samples.
+After discovering Bug 4, the procedure was simplified to **two phases** using Game Rotation
+Vector basis (basis=1, no magnetometer):
+
+1. **Phase 1 — sensor attached:** Enable `game_quaternion` at 344 Hz, settle 10 s,
+   collect pre-tare samples. No mag cal or sensor reset needed.
+2. **Phase 2 — tare + verify:** `imu.tare(0x07, 1)`, drain response packets, collect
+   post-tare samples, optionally persist.
 
 ### Individual calibration scripts
 

@@ -1,32 +1,38 @@
 """
 Tare calibration — before/after bias comparison
 
-Three-phase procedure:
+Two-phase procedure:
 
-  PHASE 0 — Magnetometer calibration (sensor DETACHED from bench)
-    Perform figure-8 motions until mag accuracy >= 2.
-    Run tests/calibration/test_calibration_mag.py first if accuracy never reaches 2.
-
-  PHASE 1 — Attach to bench + reset + settle
-    Attach sensor at zero position, aligned to magnetic North.
-    Script hard-resets the sensor (GPIO 2) to clear gyro integration drift
-    accumulated during Phase 0 figure-8 motion. Without reset, the GRV
-    carries 45-60 deg of residual drift that 30 s of settling cannot clear.
-    After reset the GRV re-initialises from the accelerometer and DCD
-    reloads from flash. Wait 30 s for convergence, then collect pre-tare readings.
+  PHASE 1 — Attach to bench + settle
+    Attach sensor at zero position.
+    Wait SETTLE_SECS for Game Rotation Vector to stabilise from accelerometer,
+    then collect pre-tare readings.
 
   PHASE 2 — Tare + verify
-    Tare is applied. Post-tare readings are collected and compared.
+    Tare is applied (Game Rotation Vector basis — no magnetometer required).
+    Post-tare readings are collected and compared.
     Optionally persist the tare offset to BNO085 flash.
+
+Why Game Rotation Vector basis for tare:
+  imu.tare(axes, basis=1) targets the Game Rotation Vector (GRV), which is
+  driven by accelerometer + gyroscope only.  No magnetometer is involved.
+  This avoids reference-frame corruption in environments where the local magnetic
+  field differs from the calibration environment (near motors, ESCs, metal
+  structures, or after moving the device to a new room).
+
+  With basis=0 (Rotation Vector) the tare bakes in the current magnetometer
+  heading.  If mag accuracy is 0 on the bench, that heading is arbitrary and
+  the tare produces a ~45 deg tilted reference frame — observed in testing.
+
+  For yaw accuracy (heading), recalibrate the magnetometer in the operating
+  environment with tests/calibration/test_calibration_mag.py and switch
+  basis back to 0.
+
+  Spec reference: Tare Usage Guide p2–3, SH-2 §6.4.4.1.
 
 Output CSVs (on Pico flash):
   /data/tare_before.csv  — pre-tare IMU vs encoder
   /data/tare_after.csv   — post-tare IMU vs encoder
-
-Why all-axes tare requires mag accuracy >= 2:
-  The BNO08X must have resolved magnetic North before taring all axes.
-  Without it, the reference frame is broken (roll axis inverted in our testing).
-  Spec reference: Tare Usage Guide p2, SH-2 §6.4.4.1.
 
 References:
   - specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf
@@ -43,8 +49,7 @@ from i2c import BNO08X_I2C
 RATE_HZ = const(344)
 SAMPLES_PER_PHASE = const(2000)
 AXIS_CENTER = const(411)  # raw reading when lever is at physical zero (was 422, corrected from tare run)
-SETTLE_SECS = const(30)
-MAG_ACC_MIN = const(2)
+SETTLE_SECS = const(10)
 
 # === Ensure output directory exists ===
 try:
@@ -73,69 +78,28 @@ def wait_for_enter(message):
 
 
 # =========================================================================
-# PHASE 0: Magnetometer calibration (sensor detached from bench)
+# PHASE 1: Sensor on bench — enable, settle + collect pre-tare
 # =========================================================================
-print("\n=== Phase 0: Magnetometer Calibration ===")
-print("DETACH the sensor from the bench before continuing.")
-print("Rotate it in a figure-8 pattern on each axis until accuracy >= 2.\n")
-
-imu.magnetic.enable(50)   # 50 Hz required by spec for ME to track mag data
-imu.begin_calibration()   # enable all three ME routines so stored DCD re-engages
-                          # for accel + gyro; mag needs figure-8 to re-confirm
-
-last_print = ticks_ms()
-while True:
-    imu.update_sensors()
-
-    if ticks_diff(ticks_ms(), last_print) < 300:
-        continue
-    last_print = ticks_ms()
-
-    if imu.magnetic.updated:
-        _, _, _, mag_acc, _ = imu.magnetic.full
-        if mag_acc >= MAG_ACC_MIN:
-            print(f"  Mag accuracy: {mag_acc}  — READY")
-            break
-        print(f"  Mag accuracy: {mag_acc}  — keep rotating (figure-8)")
-
-
 wait_for_enter(
-    "  Point the sensor toward magnetic North.\n"
-    "  Attach it to the bench at the ZERO position.\n"
+    "\n=== Phase 1: Attach to bench ===\n"
+    "  Attach the sensor at the ZERO position.\n"
     "  Press ENTER when attached and stable.")
 
+imu.game_quaternion.enable(RATE_HZ)
 
-# =========================================================================
-# PHASE 1: Sensor on bench — reset, re-enable, settle + collect pre-tare
-# =========================================================================
-
-# Hard-reset the sensor to clear gyroscope integration drift accumulated
-# during Phase 0 figure-8 motion. Without this reset, the GRV carries
-# 45-60 deg of residual drift that even 30 s of settle time cannot overcome.
-# After reset the GRV re-initialises from the accelerometer within ~2 s,
-# and DCD (mag + accel calibration) is reloaded from flash automatically.
-print("\nResetting sensor to clear Phase 0 gyro drift...")
-imu.reset_sensor()
-print("Reset complete. Re-enabling sensors...\n")
-
-imu.magnetic.enable(50)
-imu.begin_calibration()   # re-activate ME routines so DCD re-engages for all sensors
-imu.quaternion.enable(RATE_HZ)
-
-print(f"Waiting {SETTLE_SECS}s for GRV to converge from accelerometer reference.")
+print(f"\nWaiting {SETTLE_SECS}s for Game Rotation Vector to stabilise.")
 print("Keep the lever fixed at zero.\n")
 
 settle_start = ticks_ms()
 last_print = ticks_ms()
 while ticks_diff(ticks_ms(), settle_start) < SETTLE_SECS * 1000:
     imu.update_sensors()
-    if imu.quaternion.updated and ticks_diff(ticks_ms(), last_print) >= 500:
+    if imu.game_quaternion.updated and ticks_diff(ticks_ms(), last_print) >= 500:
         last_print = ticks_ms()
-        yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
+        yaw, pitch, roll, acc, ts_ms = imu.game_quaternion.euler_full
         enc = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
-        _, _, _, mag_acc, _ = imu.magnetic.full
         remaining = (SETTLE_SECS * 1000 - ticks_diff(ticks_ms(), settle_start)) / 1000
-        print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}  mag_acc: {mag_acc}  ({remaining:.0f}s left)")
+        print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}  ({remaining:.0f}s left)")
 
 
 def collect_samples(output_file):
@@ -163,8 +127,8 @@ def collect_samples(output_file):
                 sleep_ms(10)
                 continue
 
-            if imu.quaternion.updated:
-                yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
+            if imu.game_quaternion.updated:
+                yaw, pitch, roll, acc, ts_ms = imu.game_quaternion.euler_full
                 imu_now_ms = imu.bno_start_diff(now_ms)
                 lag = imu_now_ms - ts_ms
                 elapsed = ticks_diff(now_ms, start_ms)
@@ -193,14 +157,14 @@ collect_samples("/data/tare_before.csv")
 # =========================================================================
 imu.update_sensors()
 enc_at_tare = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
-if imu.quaternion.updated:
-    _, _, roll_at_tare, _, _ = imu.quaternion.euler_full
+if imu.game_quaternion.updated:
+    _, _, roll_at_tare, _, _ = imu.game_quaternion.euler_full
     print(f"\nAt tare moment — ENC: {enc_at_tare:+.2f}  IMU roll: {roll_at_tare:+.2f}  bias: {roll_at_tare - enc_at_tare:+.2f}")
 else:
     print(f"\nAt tare moment — ENC: {enc_at_tare:+.2f}  (IMU not updated)")
 
-print("Applying tare (all axes, rotation vector basis)...")
-imu.tare(0x07, 0)
+print("Applying tare (all axes, Game Rotation Vector basis — no mag required)...")
+imu.tare(0x07, 1)
 
 # Drain any packets the tare command may have triggered before collecting data.
 # Insufficient settling here can leave the I2C bus in a bad state.
@@ -211,8 +175,8 @@ for _ in range(50):
 print("Tare applied. Post-tare check:")
 for _ in range(5):
     imu.update_sensors()
-    if imu.quaternion.updated:
-        yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
+    if imu.game_quaternion.updated:
+        yaw, pitch, roll, acc, ts_ms = imu.game_quaternion.euler_full
         enc = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
         print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}")
     sleep_ms(200)

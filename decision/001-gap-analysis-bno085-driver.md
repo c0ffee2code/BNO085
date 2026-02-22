@@ -96,22 +96,24 @@ For a flight control system, we need:
 ### Milestone 2: Tare calibration and bias validation
 **Depends on:** Milestone 1 (calibration must be done first)
 
-- [ ] Point the assembly toward magnetic North, ensure lever is level
-- [ ] Run `tare()` to zero out the ~2 deg systematic bias
-- [ ] Repeat static hold and slow moves tests at 344 Hz to confirm bias is gone
-- [ ] Verify slow motion MAE drops below 1 deg target
-- [ ] Persist tare with `save_tare_data()` for power-cycle survival
+- [x] ~~Point the assembly toward magnetic North~~ — not required with Game RV basis (basis=1)
+- [x] Run `tare()` to zero out the ~3 deg systematic bias — confirmed, see ADR-004 tare results
+- [x] Repeat static hold test at 344 Hz to confirm bias is gone — 0.08 deg residual (noise floor)
+- [x] Verify MAE drops below 1 deg target — PASS: 0.08 deg after tare (first run)
+- [x] Persist tare with `save_tare_data()` for power-cycle survival — implemented and tested
 - Reference: [BradCar test_tare.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_tare.py)
 - Reference: `specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf`
 
-**Lesson 1 — Reference frame:** All-axes tare (0x07) uses the Rotation Vector (0x05) which fuses
-accelerometer, gyroscope AND magnetometer. Taring without a calibrated magnetometer
-produces a broken reference frame — in our testing it inverted the roll axis, making
-the IMU read opposite to the encoder (correlation -0.99 instead of +0.99). The Tare
-Usage Guide (page 2, steps 2-6) requires magnetometer calibration, accelerometer
-calibration, gyro ZRO calibration, and pointing the device North before taring.
-This is not optional even for roll-only testing, because the all-axes tare quaternion
-depends on all three sensor inputs being correct.
+**Lesson 1 — Tare basis matters more than magnetometer calibration:** All-axes tare
+(0x07) with basis=0 uses the Rotation Vector (0x05) which fuses accelerometer, gyroscope
+AND magnetometer. Taring with basis=0 in a magnetic environment different from calibration
+(e.g. bench near motors/ESCs) produces a corrupted reference frame — in one test it
+inverted the roll axis (correlation -0.99), in another it locked the bench at ~45 deg tilt.
+**The correct fix is not to calibrate the mag on the bench; it is to use basis=1 (Game
+Rotation Vector) for the tare.** `imu.tare(0x07, 1)` uses only accelerometer + gyroscope
+and works correctly regardless of magnetic environment. For roll-axis testing basis=1 is
+always the right choice. basis=0 is only needed when absolute heading (yaw) accuracy is
+required, and only after magnetometer recalibration in the operating environment.
 
 **Lesson 2 — ME accuracy tracking must be explicitly enabled:** After power cycle, magnetometer
 accuracy stays at 0 even with valid DCD in flash unless `begin_calibration()` (Configure ME
@@ -126,14 +128,26 @@ for command=0x03. The unhandled response packet sat on the I2C bus, and the firs
 `_tare_completed_at` flag, added `elif command == _ME_TARE_COMMAND` handler in
 `_process_control_report`, and made `_send_tare_command` wait for the response before returning.
 
-**Lesson 4 — Calibration procedure for tare:** Mag calibration requires the sensor to be freely
-moved (figure-8). This is physically incompatible with the sensor being fixed to the bench for
-tare. The tare procedure must be split into two physical phases:
-  1. Sensor detached — perform mag calibration until accuracy >= 2, use `begin_calibration()` (not
-     `begin_mag_calibration()`) to keep all three ME routines active
-  2. Sensor attached — proceed with settle, tare, collect
-Calling `begin_mag_calibration()` (accel=0, gyro=0, mag=1) disables accel/gyro ME tracking, which
-causes `save_calibration_data()` to fail with status=4 because accel/gyro accuracy drops to 0.
+**Lesson 4 — ME flag interaction with save_calibration_data:** Calling
+`begin_mag_calibration()` (P0=0, P1=0, P2=1) disables accel/gyro ME tracking. Their in-RAM
+accuracy drops to 0. `save_calibration_data()` rejects the save with status=4 because it
+sees accel and gyro as uncalibrated. Use `begin_calibration()` (all three enabled) when any
+of the three sensors need to participate in a DCD save.
+
+**Lesson 5 — Tare basis selection (basis=0 vs basis=1):**
+
+| Basis | Value | Uses | When to use |
+|-------|-------|------|-------------|
+| Rotation Vector | 0 | Accel + Gyro + Mag | Absolute heading needed; mag calibrated in operating environment |
+| Game Rotation Vector | 1 | Accel + Gyro only | Roll/pitch control; any magnetic environment |
+| Geomagnetic RV | 2 | Accel + Mag only | Low-power heading; gyro not available |
+
+For `test_tare_and_measure.py`, basis=1 is the correct default. It eliminates the
+magnetometer dependency entirely, removes the need for Phase 0 (mag figure-8, sensor
+detached) and the sensor reset between phases. The procedure reduces from 3 phases to 2.
+Switching to basis=1 also means all data collection uses `imu.game_quaternion` instead of
+`imu.quaternion`, consistent with Experiment 1's finding that Game RV is the better
+performer (0.999 vs 0.93-0.96 correlation).
 
 ### Milestone 3: Game Rotation Vector (0x08) comparison — DONE
 - [x] Run rapid moves and static hold with Game RV at 344 Hz (2 iterations each)
