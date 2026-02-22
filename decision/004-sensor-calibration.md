@@ -129,6 +129,10 @@ After tare the IMU correctly reads 0.00 deg (zeroed to the physical position). T
 reads −0.97 deg because its zero was miscalibrated. Fix: `AXIS_CENTER` corrected from 422
 to 411 in `test_tare_and_measure.py` and `report_rate_test.py`.
 
+**Further update (2026-02-22):** A precision 3D-printed jig was fabricated to perfectly centre
+the rotating shaft, magnet, and IMU sensor. Re-measurement of the physical zero gives
+`ENC_RAW = 406`. `AXIS_CENTER` updated to 406 in all test files.
+
 ### Magnetometer environment dependency
 
 After power cycle, the magnetometer stayed at accuracy 0 for 30+ seconds despite having DCD saved. Root cause: calibration was performed with the IMU detached (magnetically clean area), then remounted on the test bench near motors/ESCs/metal — a different magnetic environment. The DCD contains hard/soft iron corrections for the calibration environment, which don't match the test bench environment.
