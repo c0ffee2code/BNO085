@@ -734,6 +734,7 @@ class BNO08X:
         self._advertisement_received = False
 
         self._dcd_saved_at: float = -1
+        self._tare_completed_at: float = -1.0
         self._me_calibration_started_at: float = -1.0
         self._calibration_started = False
         self._product_id_received = False
@@ -1113,6 +1114,29 @@ class BNO08X:
 
     # ======== Motion Engine (ME) Tare and Calibration (manual) ========
 
+    def _send_tare_command(self, params) -> None:
+        """Send a tare command and wait for the sensor's Command Response (0xF1).
+
+        SH-2 §6.4 Figure 44 lists Tare (ID 3) as "Command and Response".
+        The sensor sends back a 0xF1 with command=0x03 after processing.
+        Without draining this response the next update_sensors() call reads
+        a stale packet and raises OSError EIO.
+        """
+        start_time = ticks_ms()
+        self._insert_command_request_report(
+            _ME_TARE_COMMAND,
+            self._command_buffer,
+            self._tx_sequence_number[SHTP_CHAN_CONTROL],
+            params,
+        )
+        self._wake_signal()
+        self._send_packet(SHTP_CHAN_CONTROL, self._command_buffer)
+
+        while ticks_diff(ticks_ms(), start_time) < _ME_DCD_TIMEOUT_MS:
+            self.update_sensors()
+            if self._tare_completed_at > start_time:
+                return
+
     def tare(self, axis=0x07, basis=None) -> int:
         """
         Tare the sensor
@@ -1127,24 +1151,16 @@ class BNO08X:
            4: ARVR-Stabilized Rotation Vector (not implemented)
            5: ARVR-Stabilized Game Rotation Vector  (not implemented)
         """
-        # encode rotation vector to be tared
         if basis > 2:
             raise ValueError(f"Unknown Tare Basis Report ID: {basis}")
-
         self._dbg(f"TARE: using {hex(basis)=} on {axis=}...")
-        # rotation vector (quaternion) to be tared
-        self._send_me_command(_ME_TARE_COMMAND,
-                              [_ME_TARE_NOW, axis, basis, 0, 0, 0, 0, 0, 0, ]
-                              )
+        self._send_tare_command([_ME_TARE_NOW, axis, basis, 0, 0, 0, 0, 0, 0])
         return axis, basis
 
     def clear_tare(self):
-        """ Clear the Tare data in flash. """
-        self._dbg(f"TARE: Clear Tare...")
-        self._send_me_command(_ME_TARE_COMMAND,
-                              [_ME_TARE_SET_REORIENTATION, 0, 0, 0, 0, 0, 0, 0, 0, ]
-                              )
-        return
+        """Clear the Tare data in flash."""
+        self._dbg("TARE: Clear Tare...")
+        self._send_tare_command([_ME_TARE_SET_REORIENTATION, 0, 0, 0, 0, 0, 0, 0, 0])
 
     def tare_reorientation(self, qr, qi, qj, qk):
         """
@@ -1158,40 +1174,40 @@ class BNO08X:
         j = int(qj * (1 << 14))
         k = int(qk * (1 << 14))
 
-        # this called with proper user (qr, qi, qj, qk) ordering
-        # BUT: SH-2 BNO REQUIRES DIFFERENT ORDER !  (qi, qj, qk, qr)
+        # SH-2 requires order (i, j, k, r), not user order (r, i, j, k)
         payload = pack("<hhhh", i, j, k, r)
         self._dbg(f"TARE: q_int = {(qr, qi, qj, qk)}")
-
-        params = [_ME_TARE_SET_REORIENTATION] + list(payload)
-        self._send_me_command(_ME_TARE_COMMAND, params)
-        return
+        self._send_tare_command([_ME_TARE_SET_REORIENTATION] + list(payload))
 
     def save_tare_data(self):
-        """Save the Tare data to flash"""
-        self._dbg(f"TARE Persist data to flash...")
-        self._send_me_command(_ME_TARE_COMMAND,
-                              [_ME_PERSIST_TARE, 0, 0, 0, 0, 0, 0, 0, 0, ]  # 0: command, 1-8 Reserved
-                              )
-        return
+        """Save the Tare data to flash (Persist Tare, SH-2 §6.4.4.2)."""
+        self._dbg("TARE: Persist data to flash...")
+        self._send_tare_command([_ME_PERSIST_TARE, 0, 0, 0, 0, 0, 0, 0, 0])
 
-    def begin_calibration(self) -> int:
-        """
-        Request manual calibration.  6.4.6.1 SH-2: Command Request to configure the ME calibration for
-        accelerometer, gyro and magnetometer giving the ability to control when calibration is performed.
+    def _configure_me_calibration(self, accel=0, gyro=0, mag=0) -> None:
+        """Send Configure ME Calibration command (SH-2 §6.4.7.1).
+
+        Each flag is independently 1=enabled / 0=disabled.
         """
         self._send_me_command(_ME_CALIBRATE_COMMAND,
-                              [
-                                  1,  # calibrate accel
-                                  1,  # calibrate gyro
-                                  1,  # calibrate mag
-                                  _ME_CAL_CONFIG,
-                                  0,  # calibrate planar acceleration
-                                  0,  # 'on_table' calibration
-                                  0, 0, 0, ]  # reserved
-                              )
+                              [accel, gyro, mag, _ME_CAL_CONFIG, 0, 0, 0, 0, 0])
         self._calibration_started = False
-        return
+
+    def begin_calibration(self) -> None:
+        """Enable dynamic calibration for all sensors (accel + gyro + mag)."""
+        self._configure_me_calibration(accel=1, gyro=1, mag=1)
+
+    def begin_accel_calibration(self) -> None:
+        """Enable dynamic calibration for accelerometer only (SH-2 §6.4.7.1 P0)."""
+        self._configure_me_calibration(accel=1)
+
+    def begin_gyro_calibration(self) -> None:
+        """Enable dynamic calibration for gyroscope only (SH-2 §6.4.7.1 P1)."""
+        self._configure_me_calibration(gyro=1)
+
+    def begin_mag_calibration(self) -> None:
+        """Enable dynamic calibration for magnetometer only (SH-2 §6.4.7.1 P2)."""
+        self._configure_me_calibration(mag=1)
 
     def calibration_status(self) -> int:
         """
@@ -1404,6 +1420,11 @@ class BNO08X:
 
             if command == 4:
                 self._dbg("Received: Command to Re-Initialze BNO08x\n")
+            elif command == _ME_TARE_COMMAND:
+                # SH-2 §6.4 Figure 44: Tare is "Command and Response".
+                # R0 (cal_status here) is the status byte; 0 = success.
+                self._dbg(f"Tare command response. Status: {cal_status}")
+                self._tare_completed_at = ticks_ms()
             elif command == _ME_CALIBRATE_COMMAND and cal_status == 0:
                 self._me_calibration_started_at = ticks_ms()
                 self._calibration_started = True

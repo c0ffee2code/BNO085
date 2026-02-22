@@ -17,7 +17,7 @@ from i2c import BNO08X_I2C
 # === Configuration ===
 REPORT_RATE = const(344)  # 344 Hz - fastest supported on I2C (10 Hz tested, no value for flight control)
 MAX_SAMPLES = const(2000) # Stop after this many samples to limit flash usage
-AXIS_CENTER = const(422)  # Encoder zero position (recalibrate if mechanical changes)
+AXIS_CENTER = const(411)  # Encoder zero position — raw=411 when lever at physical zero (corrected 2026-02-22)
 
 
 def setup_hardware():

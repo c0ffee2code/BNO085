@@ -1,48 +1,32 @@
 """
-Milestone 1: Tare calibration — before/after bias comparison
+Tare calibration — before/after bias comparison
 
-Lever is fixed near zero position. The script collects IMU vs encoder readings
-in two phases: before tare and after tare. Both CSVs use the same format so
-they can be compared with analyse_report_rate.py.
+Three-phase procedure:
 
-PREREQUISITE: Run sensor calibration first (Milestone 1). All-axes tare uses the
-Rotation Vector which fuses all three sensors. Without calibrated magnetometer,
-accelerometer, and gyroscope, the tare computes a broken reference frame — in our
-testing this inverted the roll axis (correlation -0.99 instead of +0.99).
+  PHASE 0 — Magnetometer calibration (sensor DETACHED from bench)
+    Perform figure-8 motions until mag accuracy >= 2.
+    Run tests/calibration/test_calibration_mag.py first if accuracy never reaches 2.
 
-Procedure:
-  1. Complete sensor calibration (magnetometer figure-8, accelerometer multi-face,
-     gyro ZRO) and save with save_calibration_data().
-  2. Point the assembly toward magnetic North, ensure lever is level.
-  3. Fix the lever near zero (screwdriver or jig).
-  4. Run this script.
-  5. Phase 1 collects pre-tare readings (expect ~2 deg bias).
-  6. Script applies tare automatically.
-  7. Phase 2 collects post-tare readings (expect bias near zero).
-  8. Download both CSVs and compare.
+  PHASE 1 — Attach to bench + settle
+    Attach sensor at zero position, aligned to magnetic North.
+    Script waits for sensor fusion to settle, then collects pre-tare readings.
 
-Output format (CSV on flash):
-  T,ENC,IMU,Lag
+  PHASE 2 — Tare + verify
+    Tare is applied. Post-tare readings are collected and compared.
+    Optionally persist the tare offset to BNO085 flash.
 
-Tare per BNO08X spec (Section 4.1.1, page 42):
-  - Tare captures the current orientation and computes a rotation offset so all
-    future outputs are relative to an East/North/Up frame at the current position.
-  - Two types: all axes (0x07 = Z+Y+X, zeroes tilt and heading) or Z-only (0x04,
-    heading only). We use all-axes tare.
-  - Sent as Command Request (0xF2) on SHTP Channel 2 with ME command 0x03.
-  - Persist tare (subcommand 0x01) writes the offset to BNO085 flash so it
-    survives power cycles.
-  - The spec warns: "the BNO08X must have resolved magnetic North before applying
-    the tare function. Otherwise when the magnetometer calibrates the heading will
-    change." The script checks magnetometer accuracy >= 2 before taring (Tare
-    Usage Guide p2, step 2a). This uses the 0-3 status bits as a proxy — the
-    spec's recommended threshold (accuracy estimate < 0.1745 rad) requires the
-    5th Rotation Vector field which is not yet parsed by the driver.
+Output CSVs (on Pico flash):
+  /data/tare_before.csv  — pre-tare IMU vs encoder
+  /data/tare_after.csv   — post-tare IMU vs encoder
+
+Why all-axes tare requires mag accuracy >= 2:
+  The BNO08X must have resolved magnetic North before taring all axes.
+  Without it, the reference frame is broken (roll axis inverted in our testing).
+  Spec reference: Tare Usage Guide p2, SH-2 §6.4.4.1.
 
 References:
-  - specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf (command byte tables, pages 2-3)
-  - specification/IMU BNO08x v1.17.pdf, Section 4.1.1 (tare overview)
-  - https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_tare.py
+  - specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf
+  - specification/IMU BNO08x v1.17.pdf, Section 4.1.1
 """
 
 from micropython import const
@@ -54,8 +38,9 @@ from i2c import BNO08X_I2C
 # === Configuration ===
 RATE_HZ = const(344)
 SAMPLES_PER_PHASE = const(2000)
-AXIS_CENTER = const(422)
+AXIS_CENTER = const(411)  # raw reading when lever is at physical zero (was 422, corrected from tare run)
 SETTLE_SECS = const(5)
+MAG_ACC_MIN = const(2)
 
 # === Ensure output directory exists ===
 try:
@@ -70,60 +55,76 @@ encoder = AS5600(i2c=i2c)
 reset_pin = Pin(2, Pin.OUT)
 int_pin = Pin(3, Pin.IN, Pin.PULL_UP)
 imu = BNO08X_I2C(i2c, address=0x4a, reset_pin=reset_pin, int_pin=int_pin, debug=False)
-imu.quaternion.enable(RATE_HZ)
 
-# === Magnetometer readiness check ===
-# Tare Usage Guide p2: "the BNO08X must have resolved magnetic North before
-# applying the tare function." The spec recommends checking accuracy estimate
-# < 0.1745 rad, but the driver exposes the 0-3 status bits (not radians).
-# Accuracy >= 2 (medium) confirms the mag has resolved North — same threshold
-# we validated during calibration.
-MAG_ACC_MIN = const(2)
-MAG_TIMEOUT_MS = const(30_000)
-imu.magnetic.enable(20)
-print("\nChecking magnetometer readiness (accuracy >= 2)...")
-print("After power cycle the sensor re-validates its stored calibration.")
-print("Slowly rotate the device in a small figure-8 to help the mag re-engage.\n")
-mag_ready = False
-mag_start = ticks_ms()
-while ticks_diff(ticks_ms(), mag_start) < MAG_TIMEOUT_MS:
+
+def wait_for_enter(message):
+    """Print instructions and drain sensor packets until user presses ENTER."""
+    import select, sys
+    print(message)
+    while True:
+        imu.update_sensors()
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            return
+
+
+# =========================================================================
+# PHASE 0: Magnetometer calibration (sensor detached from bench)
+# =========================================================================
+print("\n=== Phase 0: Magnetometer Calibration ===")
+print("DETACH the sensor from the bench before continuing.")
+print("Rotate it in a figure-8 pattern on each axis until accuracy >= 2.\n")
+
+imu.magnetic.enable(50)   # 50 Hz required by spec for ME to track mag data
+imu.begin_calibration()   # enable all three ME routines so stored DCD re-engages
+                          # for accel + gyro; mag needs figure-8 to re-confirm
+
+last_print = ticks_ms()
+while True:
     imu.update_sensors()
+
+    if ticks_diff(ticks_ms(), last_print) < 300:
+        continue
+    last_print = ticks_ms()
+
     if imu.magnetic.updated:
         _, _, _, mag_acc, _ = imu.magnetic.full
-        elapsed_s = ticks_diff(ticks_ms(), mag_start) / 1000.0
-        remaining_s = MAG_TIMEOUT_MS / 1000.0 - elapsed_s
         if mag_acc >= MAG_ACC_MIN:
-            print(f"  Magnetometer accuracy: {mag_acc} — ready.")
-            mag_ready = True
+            print(f"  Mag accuracy: {mag_acc}  — READY")
             break
-        print(f"  Magnetometer accuracy: {mag_acc} — waiting... ({remaining_s:.0f}s remaining)")
-    sleep_ms(500)
+        print(f"  Mag accuracy: {mag_acc}  — keep rotating (figure-8)")
 
-if not mag_ready:
-    print(f"\n  WARNING: Magnetometer did not reach accuracy >= 2 within {MAG_TIMEOUT_MS // 1000}s.")
-    print("  All-axes tare may produce a broken reference frame.")
-    proceed = input("  Continue anyway? [y/N]: ").strip().lower()
-    if proceed != "y":
-        raise SystemExit("Aborted — run calibration first.")
 
-# === Let sensor fusion settle ===
+wait_for_enter(
+    "  Point the sensor toward magnetic North.\n"
+    "  Attach it to the bench at the ZERO position.\n"
+    "  Press ENTER when attached and stable.")
+
+
+# =========================================================================
+# PHASE 1: Sensor on bench — settle + collect pre-tare
+# =========================================================================
+imu.quaternion.enable(RATE_HZ)
+
 print(f"\nWaiting {SETTLE_SECS}s for sensor fusion to settle...")
 print("Keep the lever fixed at zero.\n")
 
 settle_start = ticks_ms()
+last_print = ticks_ms()
 while ticks_diff(ticks_ms(), settle_start) < SETTLE_SECS * 1000:
     imu.update_sensors()
-    if imu.quaternion.updated:
+    if imu.quaternion.updated and ticks_diff(ticks_ms(), last_print) >= 500:
+        last_print = ticks_ms()
         yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
         enc = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
         print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}")
-        sleep_ms(500)
 
 
 def collect_samples(output_file):
     """Collect SAMPLES_PER_PHASE readings into a CSV file."""
     start_ms = ticks_ms()
     count = 0
+    i2c_errors = 0
 
     f = open(output_file, "w")
     f.write("T,ENC,IMU,Lag,ENC_RAW\n")
@@ -134,8 +135,15 @@ def collect_samples(output_file):
             raw_angle = encoder.read_raw_angle()
             encoder_angle = to_degrees(raw_angle, AXIS_CENTER)
 
-            if imu.update_sensors() > 0:
-                pass
+            try:
+                imu.update_sensors()
+            except OSError:
+                i2c_errors += 1
+                if i2c_errors > 10:
+                    print(f"\n  Too many I2C errors ({i2c_errors}), aborting collection.")
+                    break
+                sleep_ms(10)
+                continue
 
             if imu.quaternion.updated:
                 yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
@@ -151,21 +159,34 @@ def collect_samples(output_file):
 
     elapsed_s = ticks_diff(ticks_ms(), start_ms) / 1000.0
     hz = count / elapsed_s if elapsed_s > 0 else 0
+    if i2c_errors:
+        print(f"  WARNING: {i2c_errors} I2C error(s) during collection")
     print(f"  {count} samples in {elapsed_s:.1f}s ({hz:.1f} Hz) -> {output_file}")
     return count
 
 
-# === Phase 1: Before tare ===
-print("\n--- Phase 1: Before tare ---")
+print("\n--- Pre-tare readings ---")
 print("Collecting readings with current (untared) orientation...\n")
 collect_samples("/data/tare_before.csv")
 
-# === Apply tare ===
-print("\nApplying tare (all axes, rotation vector basis)...")
+
+# =========================================================================
+# PHASE 2: Apply tare + collect post-tare
+# =========================================================================
+imu.update_sensors()
+enc_at_tare = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
+if imu.quaternion.updated:
+    _, _, roll_at_tare, _, _ = imu.quaternion.euler_full
+    print(f"\nAt tare moment — ENC: {enc_at_tare:+.2f}  IMU roll: {roll_at_tare:+.2f}  bias: {roll_at_tare - enc_at_tare:+.2f}")
+else:
+    print(f"\nAt tare moment — ENC: {enc_at_tare:+.2f}  (IMU not updated)")
+
+print("Applying tare (all axes, rotation vector basis)...")
 imu.tare(0x07, 0)
 
-# Let tare take effect
-for _ in range(20):
+# Drain any packets the tare command may have triggered before collecting data.
+# Insufficient settling here can leave the I2C bus in a bad state.
+for _ in range(50):
     imu.update_sensors()
     sleep_ms(10)
 
@@ -178,8 +199,7 @@ for _ in range(5):
         print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}")
     sleep_ms(200)
 
-# === Phase 2: After tare ===
-print("\n--- Phase 2: After tare ---")
+print("\n--- Post-tare readings ---")
 print("Collecting readings with tared orientation...\n")
 collect_samples("/data/tare_after.csv")
 

@@ -99,7 +99,7 @@ All sensors reached target accuracy and held stable for 5 seconds:
 
 DCD saved to flash successfully. Step-by-step prompts with non-blocking `select.select()` stdin polling kept `update_sensors()` running between steps — without this, the gyro stayed at accuracy 0 because the SHTP buffers filled during blocking `input()` calls.
 
-### Tare run (Milestone 2)
+### Tare run (Milestone 2) — first attempt
 
 Before/after comparison with lever fixed at zero, encoder as reference:
 
@@ -109,6 +109,25 @@ Before/after comparison with lever fixed at zero, encoder as reference:
 | After tare | 0.09 deg | 0.01 deg | **0.08 deg** |
 
 Tare eliminated the systematic bias from ~0.5 deg to noise floor (~0.08 deg).
+
+### Tare run (Milestone 2) — second attempt, after full calibration and bug fixes
+
+Static hold, lever fixed at zero, 2000 samples per phase:
+
+| Metric | Before tare | After tare |
+|--------|-------------|------------|
+| MAE | 3.45 deg | 0.96 deg |
+| Bias (ENC−IMU) | +3.45 deg | −0.96 deg |
+| Achieved rate | 250.7 Hz | 248.3 Hz |
+| Mean lag | 4.51 ms | 4.90 ms |
+| Max lag | 46.2 ms | 396.8 ms (first 2 samples only — tare response settling) |
+
+The remaining −0.96 deg post-tare "bias" is **not a tare error** — it is the encoder center
+offset. At the physical zero position, `ENC_RAW = 411` but `AXIS_CENTER` was set to 422.
+Offset: `(411 − 422) × (360/4096) = −0.97 deg`, which exactly matches the residual.
+After tare the IMU correctly reads 0.00 deg (zeroed to the physical position). The encoder
+reads −0.97 deg because its zero was miscalibrated. Fix: `AXIS_CENTER` corrected from 422
+to 411 in `test_tare_and_measure.py` and `report_rate_test.py`.
 
 ### Magnetometer environment dependency
 
@@ -124,3 +143,83 @@ For yaw-axis testing, calibration must be performed in the same magnetic environ
 - Recalibrate if the device moves to a different magnetic environment
 - For AR/VR use, CEVA recommends disabling gyro and mag dynamic calibration during normal operation to avoid unwanted corrections during motion. For our flight control bench, we keep defaults (accel+mag dynamic calibration enabled, gyro enabled for hand-held)
 - After calibration, proceed to tare (Milestone 2) to establish the reference frame in the final mounting position
+
+## Tare Integration Debugging (Milestone 2)
+
+Issues discovered and fixed when integrating calibration into the tare workflow:
+
+### Bug 1 — Mag accuracy stuck at 0 in tare script
+
+**Symptom:** `test_tare_and_measure.py` always reported magnetometer accuracy = 0, even
+immediately after running `test_calibration_mag.py` which ended at accuracy >= 2.
+
+**Root cause:** The tare script enabled the magnetic sensor but never called `begin_calibration()`
+(Configure ME Calibration, SH-2 §6.4.7.1). The ME accuracy tracking routine is **inactive by
+default** after power-on. DCD is loaded from flash (giving the sensor a starting point) but the
+ME does not track or report live accuracy unless explicitly told to via P0/P1/P2 enable bits.
+
+**Fix:** Add `imu.begin_calibration()` in the tare script before the accuracy check loop.
+Use `begin_calibration()` (all three enabled) rather than `begin_mag_calibration()` — see Bug 2.
+
+### Bug 2 — `save_calibration_data()` fails with status=4
+
+**Symptom:** After mag accuracy reached 2, calling `save_calibration_data()` raised
+`RuntimeError: Unable to save calibration data, status=4`.
+
+**Root cause:** `begin_mag_calibration()` sends Configure ME Calibration with P0=0 (accel
+disabled), P1=0 (gyro disabled), P2=1 (mag enabled). This tells the ME to **stop tracking**
+accel and gyro. Their in-RAM accuracy drops to 0. When `save_calibration_data()` is called, the
+sensor sees accel and gyro as uncalibrated and rejects the save.
+
+**Fix:** Use `begin_calibration()` (all three ME routines active) instead of
+`begin_mag_calibration()` in the tare script. All three routines re-engage from stored DCD;
+accel and gyro recover quickly without user action while mag needs the figure-8.
+Additionally, `save_calibration_data()` does not belong in the tare script — that is
+`test_calibration_mag.py`'s responsibility. Removed the save call from the tare script.
+
+### Bug 3 — OSError EIO after tare, during post-tare data collection
+
+**Symptom:** `collect_samples("/data/tare_after.csv")` crashed with `OSError: [Errno 5] EIO`
+on the first `imu.update_sensors()` call after the tare was applied.
+
+**Root cause:** SH-2 Reference Manual Figure 44 (Command Identifiers) lists Tare (ID=3) as
+**"Command and Response"**. The sensor sends back a 0xF1 Command Response after processing
+every tare subcommand (Tare Now, Persist Tare, Set Reorientation). The driver had no
+`elif command == _ME_TARE_COMMAND` branch in `_process_control_report`. The unhandled 16-byte
+response packet sat unread on the I2C bus. The next `update_sensors()` call read this stale
+packet instead of a fresh sensor report → I2C frame out of sync → EIO.
+
+This was incorrectly diagnosed earlier as "fire-and-forget" based on sections 6.4.4.1 and
+6.4.4.2 which only show the request format. The command identifiers table (§6.4, Figure 44)
+is the authoritative source for which commands generate responses.
+
+**Fix:** Three driver changes:
+1. Added `self._tare_completed_at: float = -1.0` flag in `__init__`
+2. Added `elif command == _ME_TARE_COMMAND` handler in `_process_control_report` that sets
+   `_tare_completed_at = ticks_ms()`
+3. Changed `_send_tare_command` from fire-and-forget to waiting for `_tare_completed_at`,
+   matching the pattern used by `save_calibration_data` for DCD responses
+
+### Tare procedure — physical phases
+
+Mag calibration (figure-8 motion) is physically incompatible with the sensor being fixed to
+the test bench. The tare procedure is split into two phases in `test_tare_and_measure.py`:
+
+1. **Phase 0 — sensor detached:** Enable mag (50 Hz) + `begin_calibration()`, perform figure-8
+   until accuracy >= 2. No save needed (previous `test_calibration_mag.py` run already saved DCD).
+2. **Phase 1 — sensor attached:** `wait_for_enter` prompt, enable quaternion at 344 Hz, settle
+   5 s, collect pre-tare samples, apply tare, collect post-tare samples.
+
+### Individual calibration scripts
+
+Per-sensor calibration scripts added to avoid full recalibration when only one sensor degrades:
+
+| Script | ME flags | Sensors enabled | Trigger |
+|--------|----------|-----------------|---------|
+| `test_calibration_accel.py` | accel=1, gyro=0, mag=0 | acceleration + game_quaternion | PCB remounted |
+| `test_calibration_gyro.py` | accel=0, gyro=1, mag=0 | gyro + game_quaternion | Temperature change, power cycle |
+| `test_calibration_mag.py` | accel=0, gyro=0, mag=1 | magnetic (50 Hz) + quaternion | New room, tare shows acc < 2 |
+
+Note: individual scripts use `begin_mag/accel/gyro_calibration()`. These are safe to call
+standalone because the goal IS to save DCD with only that sensor tracked — valid when the
+other two sensors are already well-calibrated and the intent is a targeted update.

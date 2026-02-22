@@ -55,6 +55,7 @@ For a flight control system, we need:
 | Persist Tare | Yes | **IMPLEMENTED** | HIGH | `save_tare_data()` |
 | Set Reorientation | Yes | **IMPLEMENTED** | MEDIUM | `tare_reorientation()` |
 | Clear Tare | Yes | **IMPLEMENTED** | MEDIUM | `clear_tare()` |
+| Tare Command Response | Yes | **FIXED** | HIGH | SH-2 Figure 44 lists Tare as "Command and Response" — driver was missing the 0xF1 handler, leaving a stale packet on the I2C bus that caused `OSError: EIO` on the next `update_sensors()` call after tare |
 
 ### Communication Interfaces
 
@@ -103,7 +104,7 @@ For a flight control system, we need:
 - Reference: [BradCar test_tare.py](https://github.com/bradcar/bno08x_i2c_spi_MicroPython/blob/main/examples/test_tare.py)
 - Reference: `specification/BNO080-BNO085-Tare-Function-Usage-Guide.pdf`
 
-**Lesson learned:** All-axes tare (0x07) uses the Rotation Vector (0x05) which fuses
+**Lesson 1 — Reference frame:** All-axes tare (0x07) uses the Rotation Vector (0x05) which fuses
 accelerometer, gyroscope AND magnetometer. Taring without a calibrated magnetometer
 produces a broken reference frame — in our testing it inverted the roll axis, making
 the IMU read opposite to the encoder (correlation -0.99 instead of +0.99). The Tare
@@ -111,6 +112,28 @@ Usage Guide (page 2, steps 2-6) requires magnetometer calibration, accelerometer
 calibration, gyro ZRO calibration, and pointing the device North before taring.
 This is not optional even for roll-only testing, because the all-axes tare quaternion
 depends on all three sensor inputs being correct.
+
+**Lesson 2 — ME accuracy tracking must be explicitly enabled:** After power cycle, magnetometer
+accuracy stays at 0 even with valid DCD in flash unless `begin_calibration()` (Configure ME
+Calibration command, SH-2 §6.4.7.1) is called. The ME accuracy tracking routine is inactive by
+default. The tare script must call `begin_calibration()` before checking mag accuracy, otherwise
+the check always fails regardless of stored calibration quality.
+
+**Lesson 3 — Tare has a Command Response (SH-2 Figure 44):** The spec command identifiers table
+lists Tare (ID=3) as "Command AND Response". The driver was missing the 0xF1 response handler
+for command=0x03. The unhandled response packet sat on the I2C bus, and the first
+`update_sensors()` call after tare read a stale packet → `OSError: EIO`. Fix: added
+`_tare_completed_at` flag, added `elif command == _ME_TARE_COMMAND` handler in
+`_process_control_report`, and made `_send_tare_command` wait for the response before returning.
+
+**Lesson 4 — Calibration procedure for tare:** Mag calibration requires the sensor to be freely
+moved (figure-8). This is physically incompatible with the sensor being fixed to the bench for
+tare. The tare procedure must be split into two physical phases:
+  1. Sensor detached — perform mag calibration until accuracy >= 2, use `begin_calibration()` (not
+     `begin_mag_calibration()`) to keep all three ME routines active
+  2. Sensor attached — proceed with settle, tare, collect
+Calling `begin_mag_calibration()` (accel=0, gyro=0, mag=1) disables accel/gyro ME tracking, which
+causes `save_calibration_data()` to fail with status=4 because accel/gyro accuracy drops to 0.
 
 ### Milestone 3: Game Rotation Vector (0x08) comparison — DONE
 - [x] Run rapid moves and static hold with Game RV at 344 Hz (2 iterations each)
