@@ -7,9 +7,13 @@ Three-phase procedure:
     Perform figure-8 motions until mag accuracy >= 2.
     Run tests/calibration/test_calibration_mag.py first if accuracy never reaches 2.
 
-  PHASE 1 — Attach to bench + settle
+  PHASE 1 — Attach to bench + reset + settle
     Attach sensor at zero position, aligned to magnetic North.
-    Script waits for sensor fusion to settle, then collects pre-tare readings.
+    Script hard-resets the sensor (GPIO 2) to clear gyro integration drift
+    accumulated during Phase 0 figure-8 motion. Without reset, the GRV
+    carries 45-60 deg of residual drift that 30 s of settling cannot clear.
+    After reset the GRV re-initialises from the accelerometer and DCD
+    reloads from flash. Wait 30 s for convergence, then collect pre-tare readings.
 
   PHASE 2 — Tare + verify
     Tare is applied. Post-tare readings are collected and compared.
@@ -39,7 +43,7 @@ from i2c import BNO08X_I2C
 RATE_HZ = const(344)
 SAMPLES_PER_PHASE = const(2000)
 AXIS_CENTER = const(411)  # raw reading when lever is at physical zero (was 422, corrected from tare run)
-SETTLE_SECS = const(5)
+SETTLE_SECS = const(30)
 MAG_ACC_MIN = const(2)
 
 # === Ensure output directory exists ===
@@ -102,11 +106,23 @@ wait_for_enter(
 
 
 # =========================================================================
-# PHASE 1: Sensor on bench — settle + collect pre-tare
+# PHASE 1: Sensor on bench — reset, re-enable, settle + collect pre-tare
 # =========================================================================
+
+# Hard-reset the sensor to clear gyroscope integration drift accumulated
+# during Phase 0 figure-8 motion. Without this reset, the GRV carries
+# 45-60 deg of residual drift that even 30 s of settle time cannot overcome.
+# After reset the GRV re-initialises from the accelerometer within ~2 s,
+# and DCD (mag + accel calibration) is reloaded from flash automatically.
+print("\nResetting sensor to clear Phase 0 gyro drift...")
+imu.reset_sensor()
+print("Reset complete. Re-enabling sensors...\n")
+
+imu.magnetic.enable(50)
+imu.begin_calibration()   # re-activate ME routines so DCD re-engages for all sensors
 imu.quaternion.enable(RATE_HZ)
 
-print(f"\nWaiting {SETTLE_SECS}s for sensor fusion to settle...")
+print(f"Waiting {SETTLE_SECS}s for GRV to converge from accelerometer reference.")
 print("Keep the lever fixed at zero.\n")
 
 settle_start = ticks_ms()
@@ -117,7 +133,9 @@ while ticks_diff(ticks_ms(), settle_start) < SETTLE_SECS * 1000:
         last_print = ticks_ms()
         yaw, pitch, roll, acc, ts_ms = imu.quaternion.euler_full
         enc = to_degrees(encoder.read_raw_angle(), AXIS_CENTER)
-        print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}")
+        _, _, _, mag_acc, _ = imu.magnetic.full
+        remaining = (SETTLE_SECS * 1000 - ticks_diff(ticks_ms(), settle_start)) / 1000
+        print(f"  ENC: {enc:+.2f}  IMU roll: {roll:+.2f}  bias: {roll - enc:+.2f}  mag_acc: {mag_acc}  ({remaining:.0f}s left)")
 
 
 def collect_samples(output_file):
