@@ -734,8 +734,6 @@ class BNO08X:
         self._advertisement_received = False
 
         self._dcd_saved_at: float = -1
-        self._tare_completed_at: float = -1.0
-        self._tare_status: int = _COMMAND_STATUS_SUCCESS
         self._me_calibration_started_at: float = -1.0
         self._calibration_started = False
         self._product_id_received = False
@@ -1116,17 +1114,18 @@ class BNO08X:
     # ======== Motion Engine (ME) Tare and Calibration (manual) ========
 
     def _send_tare_command(self, params) -> None:
-        """Send a tare command and wait for the sensor's Command Response (0xF1).
+        """Send a Tare sub-command (Tare Now, Persist Tare, or Set Reorientation).
 
-        SH-2 §6.4 Figure 44 lists Tare (ID 3) as "Command and Response".
-        The sensor sends back a 0xF1 with command=0x03 after processing.
-        Without draining this response the next update_sensors() call reads
-        a stale packet and raises OSError EIO.
-        Raises RuntimeError on timeout or non-zero status (matches behaviour
-        of save_calibration_data).
+        SH-2 §6.4.4 defines three Tare sub-commands and shows only a command
+        table for each — no response table is specified.  This is in contrast to
+        Save DCD (§6.4.6) which explicitly documents a Command Response (0xF1).
+        Tare commands are fire-and-forget: the sensor applies the operation and
+        resumes sensor output without sending any acknowledgement.
+
+        A brief drain loop is run after the send to flush sensor packets that
+        accumulated while the tare was being applied, keeping the I2C bus clean
+        before the caller reads orientation data.
         """
-        self._tare_status = None  # clear so a stale value is not reused
-        start_time = ticks_ms()
         self._insert_command_request_report(
             _ME_TARE_COMMAND,
             self._command_buffer,
@@ -1136,15 +1135,12 @@ class BNO08X:
         self._wake_signal()
         self._send_packet(SHTP_CHAN_CONTROL, self._command_buffer)
 
-        while ticks_diff(ticks_ms(), start_time) < _ME_DCD_TIMEOUT_MS:
+        # Drain accumulated sensor packets and let the sensor settle.
+        for _ in range(20):
+            if self._int_pin is not None and self._int_pin.value() == 0:
+                self._new_data_interrupt = True
             self.update_sensors()
-            if self._tare_completed_at > start_time:
-                if self._tare_status != _COMMAND_STATUS_SUCCESS:
-                    raise RuntimeError(
-                        f"Tare command failed, status={self._tare_status}"
-                    )
-                return
-        raise RuntimeError("Tare command timed out — no response from sensor")
+            sleep_ms(5)
 
     def tare(self, axis=0x07, basis=None) -> int:
         """
@@ -1431,11 +1427,9 @@ class BNO08X:
             if command == 4:
                 self._dbg("Received: Command to Re-Initialze BNO08x\n")
             elif command == _ME_TARE_COMMAND:
-                # SH-2 §6.4 Figure 44: Tare is "Command and Response".
-                # R0 (cal_status here) is the status byte; 0 = success.
-                self._dbg(f"Tare command response. Status: {cal_status}")
-                self._tare_status = cal_status
-                self._tare_completed_at = ticks_ms()
+                # SH-2 §6.4.4 specifies no response for Tare sub-commands.
+                # Log if one arrives unexpectedly (future firmware may differ).
+                self._dbg(f"Unexpected Tare command response. Status: {cal_status}")
             elif command == _ME_CALIBRATE_COMMAND:
                 if cal_status == _COMMAND_STATUS_SUCCESS:
                     self._me_calibration_started_at = ticks_ms()
