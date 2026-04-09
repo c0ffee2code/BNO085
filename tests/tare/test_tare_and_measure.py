@@ -48,7 +48,7 @@ from i2c import BNO08X_I2C
 # === Configuration ===
 RATE_HZ = const(344)
 SAMPLES_PER_PHASE = const(2000)
-AXIS_CENTER = const(406)  # raw reading when lever is at physical zero (precision 3D-printed jig, 2026-02-22)
+AXIS_CENTER = const(275)  # raw reading when lever is at physical zero — CF frame rebuild 2026-04-03
 SETTLE_SECS = const(10)
 
 # === Ensure output directory exists ===
