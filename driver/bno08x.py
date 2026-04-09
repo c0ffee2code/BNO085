@@ -735,6 +735,7 @@ class BNO08X:
 
         self._dcd_saved_at: float = -1
         self._tare_completed_at: float = -1.0
+        self._tare_status: int = _COMMAND_STATUS_SUCCESS
         self._me_calibration_started_at: float = -1.0
         self._calibration_started = False
         self._product_id_received = False
@@ -1121,7 +1122,10 @@ class BNO08X:
         The sensor sends back a 0xF1 with command=0x03 after processing.
         Without draining this response the next update_sensors() call reads
         a stale packet and raises OSError EIO.
+        Raises RuntimeError on timeout or non-zero status (matches behaviour
+        of save_calibration_data).
         """
+        self._tare_status = None  # clear so a stale value is not reused
         start_time = ticks_ms()
         self._insert_command_request_report(
             _ME_TARE_COMMAND,
@@ -1135,7 +1139,12 @@ class BNO08X:
         while ticks_diff(ticks_ms(), start_time) < _ME_DCD_TIMEOUT_MS:
             self.update_sensors()
             if self._tare_completed_at > start_time:
+                if self._tare_status != _COMMAND_STATUS_SUCCESS:
+                    raise RuntimeError(
+                        f"Tare command failed, status={self._tare_status}"
+                    )
                 return
+        raise RuntimeError("Tare command timed out — no response from sensor")
 
     def tare(self, axis=0x07, basis=None) -> int:
         """
@@ -1189,9 +1198,9 @@ class BNO08X:
 
         Each flag is independently 1=enabled / 0=disabled.
         """
+        self._calibration_started = False
         self._send_me_command(_ME_CALIBRATE_COMMAND,
                               [accel, gyro, mag, _ME_CAL_CONFIG, 0, 0, 0, 0, 0])
-        self._calibration_started = False
 
     def begin_calibration(self) -> None:
         """Enable dynamic calibration for all sensors (accel + gyro + mag)."""
@@ -1234,7 +1243,8 @@ class BNO08X:
         while ticks_diff(ticks_ms(), start_time) < _ME_DCD_TIMEOUT_MS:
             self.update_sensors()
             if self._me_calibration_started_at > start_time:
-                break
+                return
+        raise RuntimeError("ME calibration command timed out — no response from sensor")
 
     def save_calibration_data(self) -> None:
         """ Save the self-calibration data uwing DCD save command"""
@@ -1424,11 +1434,15 @@ class BNO08X:
                 # SH-2 §6.4 Figure 44: Tare is "Command and Response".
                 # R0 (cal_status here) is the status byte; 0 = success.
                 self._dbg(f"Tare command response. Status: {cal_status}")
+                self._tare_status = cal_status
                 self._tare_completed_at = ticks_ms()
-            elif command == _ME_CALIBRATE_COMMAND and cal_status == 0:
-                self._me_calibration_started_at = ticks_ms()
-                self._calibration_started = True
-                self._dbg(f"Ready to start calibration at {ticks_ms()=}")
+            elif command == _ME_CALIBRATE_COMMAND:
+                if cal_status == _COMMAND_STATUS_SUCCESS:
+                    self._me_calibration_started_at = ticks_ms()
+                    self._calibration_started = True
+                    self._dbg(f"Ready to start calibration at {ticks_ms()=}")
+                else:
+                    raise RuntimeError(f"ME calibration command failed, status={cal_status}")
             elif command == _SAVE_DCD_COMMAND:
                 self._dbg(f"DCD Save calibration sucess. Status is {cal_status}")
 
