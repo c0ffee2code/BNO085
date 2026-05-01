@@ -142,7 +142,7 @@ of the three sensors need to participate in a DCD save.
 | Game Rotation Vector | 1 | Accel + Gyro only | Roll/pitch control; any magnetic environment |
 | Geomagnetic RV | 2 | Accel + Mag only | Low-power heading; gyro not available |
 
-For `test_tare_and_measure.py`, basis=1 is the correct default. It eliminates the
+For the tare script, basis=1 is the correct default. It eliminates the
 magnetometer dependency entirely, removes the need for Phase 0 (mag figure-8, sensor
 detached) and the sensor reset between phases. The procedure reduces from 3 phases to 2.
 Switching to basis=1 also means all data collection uses `imu.game_quaternion` instead of

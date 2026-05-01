@@ -127,7 +127,7 @@ offset. At the physical zero position, `ENC_RAW = 411` but `AXIS_CENTER` was set
 Offset: `(411 − 422) × (360/4096) = −0.97 deg`, which exactly matches the residual.
 After tare the IMU correctly reads 0.00 deg (zeroed to the physical position). The encoder
 reads −0.97 deg because its zero was miscalibrated. Fix: `AXIS_CENTER` corrected from 422
-to 411 in `test_tare_and_measure.py` and `report_rate_test.py`.
+to 411 in the tare script and `report_rate_test.py`.
 
 **Further update (2026-02-22):** A precision 3D-printed jig was fabricated to perfectly centre
 the rotating shaft, magnet, and IMU sensor. Re-measurement of the physical zero gives
@@ -154,7 +154,7 @@ Issues discovered and fixed when integrating calibration into the tare workflow:
 
 ### Bug 1 — Mag accuracy stuck at 0 in tare script
 
-**Symptom:** `test_tare_and_measure.py` always reported magnetometer accuracy = 0, even
+**Symptom:** The tare script always reported magnetometer accuracy = 0, even
 immediately after running `test_calibration_mag.py` which ended at accuracy >= 2.
 
 **Root cause:** The tare script enabled the magnetic sensor but never called `begin_calibration()`
@@ -179,7 +179,7 @@ sensor sees accel and gyro as uncalibrated and rejects the save.
 `begin_mag_calibration()` in the tare script. All three routines re-engage from stored DCD;
 accel and gyro recover quickly without user action while mag needs the figure-8.
 Additionally, `save_calibration_data()` does not belong in the tare script — that is
-`test_calibration_mag.py`'s responsibility. Removed the save call from the tare script.
+the mag calibration script's responsibility. Removed the save call from the tare script.
 
 ### Bug 3 — OSError EIO after tare, during post-tare data collection
 
@@ -229,7 +229,7 @@ as the better dynamic performer (0.999 vs 0.93–0.96 correlation, ADR-001 Exper
 
 **Simplification:** With Game RV basis, magnetometer accuracy is no longer a prerequisite
 for tare. The entire Phase 0 (mag cal figure-8, sensor detached) is eliminated from
-`test_tare_and_measure.py`. The sensor reset between phases is also eliminated (it was
+the tare procedure. The sensor reset between phases is also eliminated (it was
 only needed to clear Phase 0 gyro drift). The procedure reduces to two phases:
 
 1. **Phase 1 — sensor attached:** Enable `game_quaternion` at 344 Hz, settle 10 s, collect
@@ -243,8 +243,8 @@ environment with `tests/calibration/test_calibration_mag.py` and switch back to 
 ### Tare procedure — physical phases
 
 Mag calibration (figure-8 motion) is physically incompatible with the sensor being fixed to
-the test bench. The original tare procedure was split into three phases in
-`test_tare_and_measure.py` (Phase 0 detached, Phase 1 attached + reset, Phase 2 tare).
+the test bench. The original tare procedure was split into three phases
+(Phase 0 detached, Phase 1 attached + reset, Phase 2 tare).
 
 After discovering Bug 4, the procedure was simplified to **two phases** using Game Rotation
 Vector basis (basis=1, no magnetometer):
