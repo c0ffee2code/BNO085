@@ -24,10 +24,13 @@ This project performs **gap analysis between the BNO08X specification and the ex
 
 ### Core Files
 
-- `driver/bno08x.py` - Main BNO08X driver with SHTP protocol implementation, sensor feature managers, and data parsing
-- `driver/i2c.py` - I2C-specific subclass (`BNO08X_I2C`) with interrupt-driven packet reading
-- `driver/spi.py` - SPI-specific subclass (`BNO08X_SPI`) with interrupt and wake pin support
-- `specification/IMU BNO08x v1.17.pdf` - Official sensor datasheet
+- `src/bno08x.py` - Main BNO08X driver with SHTP protocol implementation, sensor feature managers, and data parsing
+- `src/i2c.py` - I2C-specific subclass (`BNO08X_I2C`) with interrupt-driven packet reading
+- `src/spi.py` - SPI-specific subclass (`BNO08X_SPI`) with interrupt and wake pin support
+- `references/IMU BNO08x v1.17.pdf` - Official BNO08X sensor datasheet
+- `references/SH-2-Reference-Manual-v1.2.pdf` - SH-2 sensor hub protocol reference
+- `references/BNO080-BNO085-Sesnor-Calibration-Procedure.pdf` - Calibration procedure application note
+- `references/BNO080-BNO085-Tare-Function-Usage-Guide.pdf` - Tare function usage guide
 
 ### Key Classes
 
@@ -85,4 +88,7 @@ Sensor update rates vary by interface:
 
 ## Reference Documents
 
-- `specification/IMU BNO08x v1.17.pdf` - Official BNO08X datasheet for gap analysis
+- `references/IMU BNO08x v1.17.pdf` - Official BNO08X datasheet for gap analysis
+- `references/SH-2-Reference-Manual-v1.2.pdf` - SH-2 sensor hub protocol reference
+- `references/BNO080-BNO085-Sesnor-Calibration-Procedure.pdf` - Calibration procedure application note
+- `references/BNO080-BNO085-Tare-Function-Usage-Guide.pdf` - Tare function usage guide

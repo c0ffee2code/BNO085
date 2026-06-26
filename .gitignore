@@ -19,6 +19,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Claude Code user-local settings
+.claude/settings.local.json
+
 # Temporary files
 *.tmp
 *.bak
