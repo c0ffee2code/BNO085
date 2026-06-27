@@ -114,8 +114,9 @@ class BNO08X_I2C(BNO08X):
         write_length = data_length + 4  # _SHTP_HEADER_LEN=4
         send_packet = bytearray(pack("<HBB", write_length, channel, seq) + data)
 
-        if self._debug:
-            self._dbg(f"  Sending Packet *************{self._packet_decode(write_length, channel, seq, data)}")
+        # * comment out self._dbg for normal operation, self._dbg very slow if uncommented even if debug=False
+        # if self._debug:
+        #     self._dbg(f"  Sending Packet *************{self._packet_decode(write_length, channel, seq, data)}")
 
         self._i2c.writeto(self._bno_i2c_addr, send_packet)
 
