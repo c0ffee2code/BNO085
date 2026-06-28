@@ -72,8 +72,7 @@ returns data for the latest of each package of reports.
 Possible future projects:
 FUTURE: Capture all report data in a multi-package report (without overwrite), provide user all results
 FUTURE: explore adding simple 180 degree calibration(0x0c), page 55 SH-2, but will need move request reports
-FUTURE: include estimated ange in full quaternion implementation, maybe make new modifier bno.quaternion.est_angle
-FUTURE: process two ARVR reports (rotation vector has estimated angle which has a different Q-point)
+FUTURE: process two ARVR reports (0x28/0x29) — not yet implemented; Q-point layout is Q14 for quaternion + Q12 for heading_acc, same as 0x05/0x09
 """
 
 __version__ = "1.1.0"
@@ -425,9 +424,9 @@ _SENSOR_SCALING = {
     #     BNO_REPORT_POCKET_DETECTOR: (1, 1),  # 0x21)
     #     BNO_REPORT_CIRCLE_DETECTOR: (1, 1),  #0x22)
     #     BNO_REPORT_HEART_RATE_MONITOR: (1, 1),  #0x23
-    BNO_REPORT_ARVR_STABILIZED_ROTATION_VECTOR: (_Q_POINT_14_SCALAR, 5),  # 0x28, note est acc Q_POINT_12?
+    BNO_REPORT_ARVR_STABILIZED_ROTATION_VECTOR: (_Q_POINT_14_SCALAR, 5),  # 0x28, quat=Q14 + heading_acc=Q12 (same layout as 0x05)
     BNO_REPORT_ARVR_STABILIZED_GAME_ROTATION_VECTOR: (_Q_POINT_14_SCALAR, 4),  # 0x29
-    BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR: (_Q_POINT_14_SCALAR, 4),  # 2a is angular momentum Q_POINT_10?
+    BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR: (_Q_POINT_14_SCALAR, 7),  # 0x2A: channel-5 only; (qr,qi,qj,qk) Q14 + (ax,ay,az) Q10
     #     BNO_REPORT_MOTION_REQUEST: (1, 1),  # sent to host periodically? 0x2b
     #     BNO_REPORT_OPTICAL_FLOW: (1 ,1),  #  0x2c
     #     BNO_REPORT_DEAD_RECKONING: (1 ,1), #  0x2d
@@ -443,7 +442,7 @@ _SENSOR_REPORT_LAYOUT = {
     "v2": 6 | uctypes.INT16,
     "v3": 8 | uctypes.INT16,  # valid for 3-tuple reports
     "v4": 10 | uctypes.INT16,  # valid for 4-tuple reports (quaternion)
-    "e1": 12 | uctypes.INT16,  # valid for rotation & ARVR rotation: quaternion + angle estimate
+    "e1": 12 | uctypes.UINT16,  # heading accuracy (uint16 Q12, radians) for 0x05 RV and 0x09 Geomag RV
 }
 
 # Sentinel SensorReading written on GET_FEATURE_RESPONSE so get() never raises for enabled features.
@@ -641,7 +640,7 @@ class BNO08X:
             report_name = _REPORTS_DICTIONARY.get(report_id)
             outstr += f"DBG::\t\t Report Type: {report_name} ({hex(report_id)})\n"
         if channel == SHTP_CHAN_CONTROL:
-            if report_id == 0xFC and packet_length - _SHTP_HEADER_LEN >= 6 and report_id in _REPORTS_DICTIONARY:
+            if report_id == _GET_FEATURE_RESPONSE and packet_length - _SHTP_HEADER_LEN >= 6 and report_id in _REPORTS_DICTIONARY:
                 # first report_id (self.data[0]), the report type to be enabled (self.data[1])
                 outstr += f"DBG::\t\t Feature Enabled: {_REPORTS_DICTIONARY[payload[1]]} ({hex(payload[1])})\n"
         outstr += "\nDBG::\t\tData:\n"
@@ -655,7 +654,7 @@ class BNO08X:
         outstr += "\n\t\t*******************************\n"
 
         # preliminary decoding of packets
-        if packet_length - _SHTP_HEADER_LEN == 15 and channel == SHTP_CHAN_INPUT and report_id == 0xfb:
+        if packet_length - _SHTP_HEADER_LEN == 15 and channel == SHTP_CHAN_INPUT and report_id == _BASE_TIMESTAMP:
             outstr += f"DBG::\t\t Report 1: {_REPORTS_DICTIONARY[payload[5]]} ({hex(payload[5])})\n"
 
         # New Stye Advertisement Response gives sensor information, first time is 284 bytes, when request is 51 bytes
@@ -706,14 +705,12 @@ class BNO08X:
             report_id = p_mv[0]
 
             # fast path for timestamp & reports in a single packet, inlined from self._process_report
-            if channel == 3 and report_id == _BASE_TIMESTAMP:
+            if channel == SHTP_CHAN_INPUT and report_id == _BASE_TIMESTAMP:
                 self._last_base_timestamp_us = unpack_from("<i", p_mv, 1)[0] * 100
                 packet_base_ms = ticks_diff(self.ms_at_interrupt, self._epoch_start_ms) - (
                         self._last_base_timestamp_us * FP_TO_MS)
                 report_index += 5  # _BASE_TIMESTAMP is 5 bytes
 
-                # native-compiled fast path - test showed it was slower?
-                # self._sensor_fast_path(p_mv, data_length, 5, packet_base_ms, report_length_map, scaling_map, report_values, unread_counts)
                 p = p_mv
                 while report_index < data_length:
                     report_id = p[report_index]
@@ -721,7 +718,7 @@ class BNO08X:
 
                     if required_bytes == 0: break
 
-                    if 0x01 <= report_id <= 0x09:
+                    if BNO_REPORT_ACCELEROMETER <= report_id <= BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR:
                         scalar, count = scaling_map(report_id, (0, 0))
                         idx = report_index
                         b2 = p[idx + 2]
@@ -746,8 +743,7 @@ class BNO08X:
                         else:  # count == 5: quaternion + heading accuracy, SH-2 §6.5.18/6.5.20
                             r = p[idx + 10] | (p[idx + 11] << 8)
                             v4 = (r - ((r & SIGN_BIT) << 1)) * scalar
-                            r = p[idx + 12] | (p[idx + 13] << 8)
-                            hacc = (r - ((r & SIGN_BIT) << 1)) * _Q_POINT_12_SCALAR
+                            hacc = (p[idx + 12] | (p[idx + 13] << 8)) * _Q_POINT_12_SCALAR  # uint16, no sign-extend
                             report_values[report_id] = SensorReading((v4, v1, v2, v3, hacc), b2 & 0x03, ts, host_ts)
 
                         report_index += required_bytes
@@ -757,7 +753,7 @@ class BNO08X:
                 continue
 
             # Split payload into multiple reports and process
-            if channel == 3 or channel == 2:
+            if channel == SHTP_CHAN_INPUT or channel == SHTP_CHAN_CONTROL:
                 while report_index < data_length:
                     report_id = p_mv[report_index]
                     required_bytes = report_length_map(report_id, 0)
@@ -774,14 +770,13 @@ class BNO08X:
                     self._process_report(report_id, p_mv[report_index: report_index + required_bytes])
                     report_index += required_bytes
 
-            elif channel == 0:  # all reports on channel 5 are single report packets
+            elif channel == SHTP_CHAN_COMMAND:
                 self._process_control_report(0x00, p_mv)
 
-            elif channel == 1:  # all reports on channel 5 are single report packets
+            elif channel == SHTP_CHAN_EXE:
                 self._process_control_report(p_mv[0], p_mv)
 
-            elif channel == 5:  # gyro integrated rotation vector, 14 bytes raw int16, no report ID/status/delay
-                SIGN_BIT = 32768
+            elif channel == BNO_CHAN_GYRO_ROTATION_VECTOR:  # 14 bytes raw int16, no report ID/status/delay
                 Q14 = _Q_POINT_14_SCALAR
                 Q10 = _Q_POINT_10_SCALAR
                 p = p_mv
@@ -833,15 +828,15 @@ class BNO08X:
         """current magnetic field measurements on the X, Y, and Z axes"""
         return self._get_feature(BNO_REPORT_MAGNETOMETER)
 
-    # 4-Tuple Quaternion Reports
+    # 5-Tuple Quaternion Reports (data = qr, qi, qj, qk, heading_acc_rad)
     @property
     def quaternion(self):
-        """A quaternion representing the current rotation vector"""
+        """Rotation Vector — data = (qr, qi, qj, qk, heading_acc_rad). heading_acc_rad is Q12 radians (SH-2 §6.5.18)."""
         return self._get_feature(BNO_REPORT_ROTATION_VECTOR)
 
     @property
     def geomagnetic_quaternion(self):
-        """A quaternion representing the current geomagnetic rotation vector"""
+        """Geomagnetic Rotation Vector — data = (qr, qi, qj, qk, heading_acc_rad). heading_acc_rad is Q12 radians (SH-2 §6.5.20)."""
         return self._get_feature(BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR)
 
     @property
@@ -900,11 +895,6 @@ class BNO08X:
     def bno_start_diff(self, ticks: int) -> int:
         """ Return milliseconds difference between ticks and sensor startup """
         return ticks_diff(ticks, self._epoch_start_ms)
-
-    @staticmethod
-    def degree_conversion(x, y, z):
-        """ Converts gyro rad/s to degree/sec """
-        return x * 57.2957795, y * 57.2957795, z * 57.2957795
 
     # ======== Motion Engine (ME) Tare and Calibration (manual) ========
 
@@ -1090,10 +1080,10 @@ class BNO08X:
 
         Timestamps are msec since first sensor interrupt in float(FP) with 0.1ms resolution.
         Host synched int or FP32 issues: overflow, wrap to quickly, or lack precision. FP32 has 6-7 significant digits
-        Can't use problematic: self._sensor_ms = self.last_interrupt_ms - self._last_base_timestamp_us + delay_ms
+        Can't use problematic: sensor_ms = self.last_interrupt_ms - self._last_base_timestamp_us + delay_ms
         """
         # process typical sensor reports first
-        if 0x01 <= report_id <= 0x09:
+        if BNO_REPORT_ACCELEROMETER <= report_id <= BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR:
             scalar, count = _SENSOR_SCALING[report_id]
             r = uctypes.struct(uctypes.addressof(report_bytes), _SENSOR_REPORT_LAYOUT, uctypes.LITTLE_ENDIAN)
 
@@ -1120,9 +1110,9 @@ class BNO08X:
             # remove self._dbg from time critical operations
             # self._dbg(f"Report: {_REPORTS_DICTIONARY[report_id]}\nData: {sensor_data}, {accuracy=}, {delay_ms=}")
 
-            self._sensor_ms = ticks_diff(self.ms_at_interrupt,
-                                         self._epoch_start_ms) - self._last_base_timestamp_us * 0.001 + delay_ms
-            self._report_values[report_id] = SensorReading(sensor_data, accuracy, self._sensor_ms, self._current_host_ts)
+            sensor_ms = ticks_diff(self.ms_at_interrupt,
+                                   self._epoch_start_ms) - self._last_base_timestamp_us * 0.001 + delay_ms
+            self._report_values[report_id] = SensorReading(sensor_data, accuracy, sensor_ms, self._current_host_ts)
             return
 
         # Base Timestamp (0xfb)
@@ -1135,22 +1125,23 @@ class BNO08X:
             self._last_base_timestamp_us += unpack_from("<i", report_bytes, 1)[0] * 100
             return
 
-        #  **** Process all control reports, catchall if processing sensor reports
-        if report_id >= 0xF0:
+        if report_id in (_COMMAND_RESPONSE, _REPORT_PRODUCT_ID_RESPONSE, _GET_FEATURE_RESPONSE):
             self._process_control_report(report_id, report_bytes)
             return
 
         if report_id == BNO_REPORT_STEP_COUNTER:
+            ts = float(ticks_diff(self.ms_at_interrupt, self._epoch_start_ms))
             self._report_values[report_id] = SensorReading(
-                unpack_from("<H", report_bytes, 8)[0], None, 0.0, self._current_host_ts)
+                unpack_from("<H", report_bytes, 8)[0], None, ts, self._current_host_ts)
             return
 
         if report_id == BNO_REPORT_STABILITY_CLASSIFIER:
             classification_bitfield = unpack_from("<B", report_bytes, 4)[0]
             stability_classification = ["Unknown", "On Table", "Stationary", "Stable", "In motion"][
                 classification_bitfield]
+            ts = float(ticks_diff(self.ms_at_interrupt, self._epoch_start_ms))
             self._report_values[BNO_REPORT_STABILITY_CLASSIFIER] = SensorReading(
-                stability_classification, None, 0.0, self._current_host_ts)
+                stability_classification, None, ts, self._current_host_ts)
             return
 
         # Activitity Classifier in SH-2 (6.5.36)
@@ -1160,8 +1151,9 @@ class BNO08X:
             raw_conf = unpack_from("<9B", report_bytes, 6)
             confidence = page * 10 + raw_conf[most_likely_idx]
             activity_name = ACTIVITIES[most_likely_idx]
+            ts = float(ticks_diff(self.ms_at_interrupt, self._epoch_start_ms))
             self._report_values[BNO_REPORT_ACTIVITY_CLASSIFIER] = SensorReading(
-                (activity_name, confidence), None, 0.0, self._current_host_ts)
+                (activity_name, confidence), None, ts, self._current_host_ts)
             return
 
         # Raw accelerometer and Raw Magnetometer: data = (x, y, z, time_stamp)
@@ -1184,7 +1176,7 @@ class BNO08X:
                 self._current_host_ts)
             return
 
-        if 0x28 <= report_id <= 0x29:
+        if BNO_REPORT_ARVR_STABILIZED_ROTATION_VECTOR <= report_id <= BNO_REPORT_ARVR_STABILIZED_GAME_ROTATION_VECTOR:
             # FUTURE: add two ARVR reports (4-tuple and 5-Tuple)
             raise NotImplementedError(f"ARVR Reports ({hex(report_id)}) is not supported yet.")
 

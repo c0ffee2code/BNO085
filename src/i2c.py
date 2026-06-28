@@ -33,6 +33,11 @@ from bno08x import BNO08X
 _BNO08X_DEFAULT_ADDRESS = const(0x4B)
 _BNO08X_BACKUP_ADDRESS = const(0x4A)
 
+# SHTP I2C framing constants (SH-2 §1.3.1)
+_SHTP_HEADER_ERROR = const(0xFFFF)  # sensor returned invalid header
+_SHTP_LEN_MASK     = const(0x7FFF)  # strip continuation bit to get packet length
+_SHTP_CONT_BIT     = const(0x8000)  # set when this fragment continues a previous packet
+
 
 def _is_i2c(obj) -> bool:
     """ Check that i2c object has required interfaces """
@@ -140,13 +145,13 @@ class BNO08X_I2C(BNO08X):
         raw_packet_bytes = (h[1] << 8) | h[0]
         if raw_packet_bytes == 0:
             return None  # Must check for None (non-tuple) first then can unpack tuple
-        if raw_packet_bytes == 0xFFFF:
+        if raw_packet_bytes == _SHTP_HEADER_ERROR:
             raise OSError("FATAL BNO08X Error: Invalid SHTP header(0xFFFF), BNO08x sensor corrupted?")
 
-        packet_bytes = raw_packet_bytes & 0x7FFF
+        packet_bytes = raw_packet_bytes & _SHTP_LEN_MASK
 
         # if fresh packet, clear previous assembly buffer
-        is_continuation = bool(raw_packet_bytes & 0x8000)
+        is_continuation = bool(raw_packet_bytes & _SHTP_CONT_BIT)
         if not is_continuation:
             self._assembly_buffer = bytearray()
             self._target_len = packet_bytes

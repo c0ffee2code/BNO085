@@ -26,6 +26,7 @@ PICO_CODE = """\
 from machine import I2C, Pin
 from math import atan2, asin, sqrt
 from utime import ticks_ms, ticks_diff
+from bno08x import SensorResetError
 from i2c import BNO08X_I2C
 
 RATE_HZ = 50
@@ -51,7 +52,11 @@ last_ts = -1.0
 n = 0
 
 while n < 2000:
-    imu.update_sensors()
+    try:
+        imu.update_sensors()
+    except SensorResetError as e:
+        print(f"SENSOR RESET: {e}")
+        break
     gq = imu.game_quaternion.get()
     if gq.sensor_ts_ms == 0.0 or gq.sensor_ts_ms == last_ts:
         continue
