@@ -23,6 +23,7 @@ Thumbs.db
 .claude/settings.local.json
 
 # Temporary files
+nul
 *.tmp
 *.bak
 *.swp
