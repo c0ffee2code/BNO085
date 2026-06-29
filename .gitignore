@@ -22,6 +22,9 @@ Thumbs.db
 # Claude Code user-local settings
 .claude/settings.local.json
 
+# Captured sensor data (generated, not source)
+tools/captures/
+
 # Temporary files
 nul
 *.tmp
